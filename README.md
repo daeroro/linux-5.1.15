@@ -4,4 +4,4 @@
   - smp_setup_processor_id()
   - boot_cpu_init()
   - setup_arch() - early_fixmap_init()
-                 -- setup_machine_fdt()
+                 - setup_machine_fdt()
