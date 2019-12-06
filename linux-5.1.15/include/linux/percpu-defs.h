@@ -204,8 +204,7 @@
 #ifndef __ASSEMBLY__
 
 /*
- * __verify_pcpu_ptr() verifies @ptr is a percpu pointer without evaluating
- * @ptr and is invoked once before a percpu area is accessed by all
+
  * accessors and operations.  This is performed in the generic part of
  * percpu and arch overrides don't need to worry about it; however, if an
  * arch wants to implement an arch-specific percpu accessor or operation,

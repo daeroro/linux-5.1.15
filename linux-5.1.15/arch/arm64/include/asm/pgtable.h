@@ -577,6 +577,10 @@ static inline phys_addr_t pud_page_paddr(pud_t pud)
 
 static inline void set_pgd(pgd_t *pgdp, pgd_t pgd)
 {
+	/*
+		pgdp에 PAGE_MASK를 씌워 swapper_pg_dir과 비교
+		- 같으면 set_swapper_pgd() 
+	*/
 	if (in_swapper_pgdir(pgdp)) {
 		set_swapper_pgd(pgdp, pgd);
 		return;

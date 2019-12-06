@@ -2024,6 +2024,13 @@ static void of_alias_add(struct alias_prop *ap, struct device_node *np,
  * @dt_alloc:	An allocator that provides a virtual address to memory
  *		for storing the resulting tree
  */
+/*
+	of_alias_scan() : 전역 변수 of_stdout을 설정하고 새로운 alias를 리스트에 추가하기
+
+	- "/chosen" 노드를 검색하여 전역 변수 of_stdout을 "stdout_path"에 연결된 노드롤 설정
+	- "/aliases" 노드의 속성 중 "name" 및 "phandle"을 찾아 aliases_prop 구조체로 구성하여
+	  리스트 aliases_lookup에 추가한다.
+*/
 void of_alias_scan(void * (*dt_alloc)(u64 size, u64 align))
 {
 	struct property *pp;

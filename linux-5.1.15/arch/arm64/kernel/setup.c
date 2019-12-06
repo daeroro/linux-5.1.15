@@ -189,7 +189,15 @@ static void __init setup_machine_fdt(phys_addr_t dt_phys)
 	void *dt_virt = fixmap_remap_fdt(dt_phys);
 	const char *name;
 
-	// 노드를 스캔하여 먼저(early) 초기화 할 항목들을 수행
+	/* 노드를 스캔하여 먼저(early) 초기화 할 항목들을 수행
+		- 디바이스 트리를 발견할 수 없거나 디바이스 트리 물리 주소를 검사하여 이상이 있는 경우
+		  에러 메시지를 출력하고 동작을 멈춤.
+
+		- boot_command_line 설정
+		- initrd_start, initrd_end 설정
+		- dt_root_size_cells, dt_root_addr_cells 설정
+		- memory memblock1에 메모리 등록
+	*/
 	if (!dt_virt || !early_init_dt_scan(dt_virt)) {
 		pr_crit("\n"
 			"Error: invalid device tree blob at physical address %pa (virtual address 0x%p)\n"
@@ -201,11 +209,19 @@ static void __init setup_machine_fdt(phys_addr_t dt_phys)
 			cpu_relax();
 	}
 
+	/*
+		머신명을 알아와서 모델명을 출력한다.
+		- 루트 노드의 "model" 속성을 머신명으로 사용,
+		  속성이 발견되지 않는 경우 "compatible" 속성을 사용
+	*/
 	name = of_flat_dt_get_machine_name();
 	if (!name)
 		return;
 
 	pr_info("Machine model: %s\n", name);
+	/*
+		dump_stack_print_info() 함수가 호출될 때 사용할 머신 모델 명을 미리 저장해둠.
+	*/
 	dump_stack_set_arch_desc("%s (DT)", name);
 }
 
@@ -286,8 +302,16 @@ arch_initcall(reserve_memblock_reserved_regions);
 
 u64 __cpu_logical_map[NR_CPUS] = { [0 ... NR_CPUS-1] = INVALID_HWID };
 
+/*
+	setup_arch() : ARM64 아키텍처에 초기화를 진행한다. 
+				 - 주로 커널 및 메모리 매핑과 reserve 영역들을 등록한다.
+*/
 void __init setup_arch(char **cmdline_p)
 {
+	/*
+		커널 코드 영역과, 데이터 영역(컴파일 타임에 초기화된 데이터 및 
+			초기화 되지 않은 데이터 영역)의 가상주소를 지정한다.
+	*/
 	init_mm.start_code = (unsigned long) _text;
 	init_mm.end_code   = (unsigned long) _etext;
 	init_mm.end_data   = (unsigned long) _edata;
@@ -295,9 +319,13 @@ void __init setup_arch(char **cmdline_p)
 
 	*cmdline_p = boot_command_line;
 
+	
+	//	fixmap을 사용할 수 있도록 페이지 테이블에 매핑해둔다.
 	early_fixmap_init();
+	// early I/O 메모미 매핑 초기화하기
 	early_ioremap_init();
 
+	// fdt를 읽어 머신 초기화하기
 	setup_machine_fdt(__fdt_pointer);
 
 	parse_early_param();

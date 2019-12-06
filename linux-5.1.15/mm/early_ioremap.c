@@ -72,14 +72,33 @@ static void __iomem *prev_map[FIX_BTMAPS_SLOTS] __initdata;
 static unsigned long prev_size[FIX_BTMAPS_SLOTS] __initdata;
 static unsigned long slot_virt[FIX_BTMAPS_SLOTS] __initdata;
 
+/*
+	early_ioremap_setup() : early I/O 매핑을 위해 fixmap에 7개의 256K 가상주소 영역을 준비하는 과정
+*/
 void __init early_ioremap_setup(void)
 {
 	int i;
 
+	/*
+		 FIX_BTMAPS_SLOTS(7) 만큼 루프를 돌며 전역 prev_map[] 배열에 값이 설정된 경우
+		 경고 메세지를 출력
+		 - prev_map[] : fixmap에 매핑된 가상 주소
+	*/
 	for (i = 0; i < FIX_BTMAPS_SLOTS; i++)
 		if (WARN_ON(prev_map[i]))
 			break;
 
+	/*
+		#define NR_FIX_BTMAPS		(SZ_256K / PAGE_SIZE) = 256K / 4K = 64
+	
+		FIX_BTMAPS_SLOTS(7) 수 만큼 루프를 돌며 전역 slot_virt[] 배열에
+		fixmap의 BTMAP 가상 주소를 설정한다.
+
+		- 7개의 fixmap 엔트리가 있고, 각 엔트리들은 fixmap의 BTMAP에 해당하는 가상 주소들을 
+		  가리키는데 엔트리 간의 간격은 256K 이다.
+
+		- slot_virt[] : 부트업 타임에 초기화된 각 슬롯에 해당하는 fixmap 가상 주소(256K단위)
+	*/
 	for (i = 0; i < FIX_BTMAPS_SLOTS; i++)
 		slot_virt[i] = __fix_to_virt(FIX_BTMAP_BEGIN - NR_FIX_BTMAPS*i);
 }

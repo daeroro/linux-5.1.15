@@ -162,7 +162,10 @@ int of_fdt_match(const void *blob, unsigned long node,
 
 	return score;
 }
-
+/*
+	unflatten_dt_alloc() : *mem을 align 단위로 round up하고 리턴하며
+							입출력 인수 *mem 값은 size만큼 증가시킨다.
+*/
 static void *unflatten_dt_alloc(void **mem, unsigned long size,
 				       unsigned long align)
 {
@@ -444,6 +447,11 @@ static bool populate_node(const void *blob,
 	return true;
 }
 
+/*
+	reverse_nodes() : child 노드를 확장 포멧으로 등록할 때 가장 마지막에 등록한 노드가
+					  가장 앞에 등록을 했기 때문에 순서가 바뀌어 있다.
+					- 따라서 노드를 DTB 순서대로 만들기 위해 각 child 노드를 reverse한다.
+*/
 static void reverse_nodes(struct device_node *parent)
 {
 	struct device_node *child, *next;
@@ -567,7 +575,7 @@ static int unflatten_dt_nodes(const void *blob,
 	 * node order
 	 */
 	/*
-		2nd pass인 경우 노드를 reverse한다.
+		2nd pass인 경우 DTB 순서대로 만들기 위해 각 child 노드를 reverse한다.
 	*/
 	if (!dryrun)
 		reverse_nodes(root);
@@ -1509,6 +1517,10 @@ int __init __weak early_init_dt_reserve_memory_arch(phys_addr_t base,
 	return memblock_reserve(base, size);
 }
 
+/*
+	early_init_dt_alloc_memory_arch() : align단위로 size만큼의 공간을 memblock으로부터 할당
+										그 가상주소를 리턴
+*/
 static void * __init early_init_dt_alloc_memory_arch(u64 size, u64 align)
 {
 	void *ptr = memblock_alloc(size, align);

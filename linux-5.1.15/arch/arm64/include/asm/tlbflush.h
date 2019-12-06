@@ -233,6 +233,7 @@ static inline void flush_tlb_kernel_range(unsigned long start, unsigned long end
 {
 	unsigned long addr;
 
+	// start ~ end 까지의 범위가 전체 pte 전체 테이블크기 보다 크면 flush_tlb_all()
 	if ((end - start) > (MAX_TLBI_OPS * PAGE_SIZE)) {
 		flush_tlb_all();
 		return;

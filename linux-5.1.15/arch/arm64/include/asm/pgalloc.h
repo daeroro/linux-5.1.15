@@ -71,6 +71,10 @@ static inline void pud_free(struct mm_struct *mm, pud_t *pudp)
 	free_page((unsigned long)pudp);
 }
 
+/*
+	__pgd_populate() : pgd 페이지 테이블 엔트리 포인터 @pgdp에
+						다음 레벨의 pud 테이블을 연결할 때 @prot 속성을 사용한다.
+*/
 static inline void __pgd_populate(pgd_t *pgdp, phys_addr_t pudp, pgdval_t prot)
 {
 	set_pgd(pgdp, __pgd(__phys_to_pgd_val(pudp) | prot));

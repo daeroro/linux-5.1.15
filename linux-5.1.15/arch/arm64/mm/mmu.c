@@ -75,6 +75,7 @@ void set_swapper_pgd(pgd_t *pgdp, pgd_t pgd)
 	pgd_t *fixmap_pgdp;
 
 	spin_lock(&swapper_pgdir_lock);
+	// FIX_PGD에 대한 가상 주소를 fixmap_pgdp에 저장
 	fixmap_pgdp = pgd_set_fixmap(__pa_symbol(pgdp));
 	WRITE_ONCE(*fixmap_pgdp, pgd);
 	/*
@@ -292,6 +293,16 @@ static inline bool use_1G_block(unsigned long addr, unsigned long next,
 	return true;
 }
 
+/*
+	alloc_init_pud() : pud 테이블 생성하기
+
+	- 물리 주소(phys)를 size만큼 가상 주소(addr)에 해당하는 pud 테이블 엔트리에 매핑
+	- pud 매핑을 수행하면 그 뒤에 따르는 pmd 및 pte 테이블까지 각 엔트리 매핑하고 연결
+	- 연결되는 하위 페이지 테이블을 할당받아야 할 때 인자로 전달받은 pgtable_alloc 함수 호출
+
+	- 매핑할 주소 범위가 1G 단위에 해당, pud 섹션 매핑이 가능한 상태
+		-> pmd 테이블을 할당받아 연결하지 않고 직접 pud 섹션 페이지 패밍을 수행함.
+*/
 static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 			   phys_addr_t phys, pgprot_t prot,
 			   phys_addr_t (*pgtable_alloc)(void),
@@ -342,6 +353,13 @@ static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 	pud_clear_fixmap();
 }
 
+/*
+	pgdir = swapper_pg_dir
+	phys = round_down(dt_phys, SWAPPER_BLOCK_SIZE)
+	virt = dt_virt_base
+	size = SWAPPER_BLOCK_SIZE
+	prot = prot
+*/
 static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
 				 unsigned long virt, phys_addr_t size,
 				 pgprot_t prot,
@@ -349,21 +367,37 @@ static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
 				 int flags)
 {
 	unsigned long addr, length, end, next;
+	// pgdir에서 virt에 해당하는 엔트리 주소를 구함
 	pgd_t *pgdp = pgd_offset_raw(pgdir, virt);
 
 	/*
 	 * If the virtual and physical address don't have the same offset
 	 * within a page, we cannot map the region as the caller expects.
 	 */
+	
+	// 물리 주소와 가상 주소에서 PAGE 오프셋은 같아야 함 ->  같지 않으면 return
 	if (WARN_ON((phys ^ virt) & ~PAGE_MASK))
 		return;
 
+	// phys에 물리 주소 페이지 오프셋을 0으로 만들어 저장
 	phys &= PAGE_MASK;
+	// addr에 가상 주소 virt의 페이지 오프셋을 0으로 만들어 저장
 	addr = virt & PAGE_MASK;
+	/*
+		size + (virt & ~PAGE_MASK)를 페이지 단위로 정렬한 크기를 length에 저장
+
+		?? virt & ~PAGE_MASK를 왜 더하는 거임 ??
+		?? ********************************************************??
+	*/
 	length = PAGE_ALIGN(size + (virt & ~PAGE_MASK));
 
+	// 끝 주소를 end에 저장
 	end = addr + length;
 	do {
+		/*
+			addr : 가상 주소 virt의 페이지 오프셋을 0으로
+			end : BLOCK의 끝 주소
+		*/		
 		next = pgd_addr_end(addr, end);
 		alloc_init_pud(pgdp, addr, next, phys, prot, pgtable_alloc,
 			       flags);
@@ -387,14 +421,28 @@ static phys_addr_t pgd_pgtable_alloc(void)
  * without allocating new levels of table. Note that this permits the
  * creation of new section or page entries.
  */
+/*
+	create_mapping_noalloc(round_down(dt_phys, SWAPPER_BLOCK_SIZE),
+             dt_virt_base, SWAPPER_BLOCK_SIZE, prot);
+*/
 static void __init create_mapping_noalloc(phys_addr_t phys, unsigned long virt,
 				  phys_addr_t size, pgprot_t prot)
 {
+	/*
+		 수정하고자 하는 가상 주소 virt가
+		 VMALLOC_START 보다 아래에 있으면 커널 범위 밖에 있는 것 -> return
+	*/
 	if (virt < VMALLOC_START) {
 		pr_warn("BUG: not creating mapping for %pa at 0x%016lx - outside kernel range\n",
 			&phys, virt);
 		return;
 	}
+	/*
+		phys = round_down(dt_phys, SWAPPER_BLOCK_SIZE)
+		virt = dt_virt_base
+		size = SWAPPER_BLOCK_SIZE
+		prot = prot
+	*/
 	__create_pgd_mapping(init_mm.pgd, phys, virt, size, prot, NULL,
 			     NO_CONT_MAPPINGS);
 }
@@ -764,13 +812,18 @@ void vmemmap_free(unsigned long start, unsigned long end,
 }
 #endif	/* CONFIG_SPARSEMEM_VMEMMAP */
 
+/*
+	fixmap_pud() : 가상 주소 addr에 대한 fixmap용 pud 엔트리 주소를 리턴
+*/
 static inline pud_t * fixmap_pud(unsigned long addr)
 {
+	// 가상 주소 addr에 대한 커널용 pgd 엔트리 주소를 구한다
 	pgd_t *pgdp = pgd_offset_k(addr);
 	pgd_t pgd = READ_ONCE(*pgdp);
 
 	BUG_ON(pgd_none(pgd) || pgd_bad(pgd));
 
+	// 커널 이미지용 pud 엔트리 주소를 구한다.
 	return pud_offset_kimg(pgdp, addr);
 }
 
@@ -795,15 +848,40 @@ static inline pte_t * fixmap_pte(unsigned long addr)
  * lm_alias so __p*d_populate functions must be used to populate with the
  * physical address from __pa_symbol.
  */
+/*
+	early_fixmap_init() : 고정 매핑 초기화
+		
+		- dynamic 매핑이 활성화되기 이전에 일부 고정된 가상 주소 영역에 특정 물리 주소를 
+		  매핑 시켜 사용할 수 있는 fixmap 가상 주소 영역을 먼저(early) 사용하려 한다.
+*/
 void __init early_fixmap_init(void)
 {
 	pgd_t *pgdp, pgd;
 	pud_t *pudp;
 	pmd_t *pmdp;
+
+	// fixmap영역의 가장 낮은 주소를 addr에 대입한다.
 	unsigned long addr = FIXADDR_START;
 
+	/*
+		가상 주소 addr에 해당하는 pgd 엔트리 값을 읽어온다.
+		- pgd 테이블에서 pgd 엔트리 포인터인 pgdp를 알아온 후,
+		  이 포인터를 통해 pgd 엔트리 값을 읽어 pgd에 대입한다.
+	*/
 	pgdp = pgd_offset_k(addr);
 	pgd = READ_ONCE(*pgdp);
+
+	/*
+		페이지 테이블 변환 레벨이 4단계이고 페이지 크기로 16K를 사용하는 커널인 경우
+		pgd 엔트리가 최대 2개밖에 존재하지 않는다. 
+		- 그 중 하나는 커널 메모리용 가상 주소 공간이고,
+		  나머지 하나는 커널에서 여러 용도로 사용되는 몇 가지 공간 주소를 모두 포함하여 사용되며
+		  그 중에는 커널 이미지 영역이나 fixmap 영역도 포함
+		- 커널 이미지와 fixmap 영역은 1개의 bm_pud[] 테이블에 존재하게 되고
+		  이런 경우에는 bm_pud[] 페이지 테이블이 커널 이미지 용도로 이미 활성화되어 사용중이므로
+		  다시 활성화할 필요가 없어진다.
+		-> 곧바로 fixmap 시작 주소에 해당하는 pud 엔트리 포인터를 구한다.
+	*/
 	if (CONFIG_PGTABLE_LEVELS > 3 &&
 	    !(pgd_none(pgd) || pgd_page_paddr(pgd) == __pa_symbol(bm_pud))) {
 		/*
@@ -814,19 +892,43 @@ void __init early_fixmap_init(void)
 		BUG_ON(!IS_ENABLED(CONFIG_ARM64_16K_PAGES));
 		pudp = pud_offset_kimg(pgdp, addr);
 	} else {
+	/*
+		그 외의 경우 bm_pud[]테이블은 fixmap 영역 및 커널 이미지 영역과 같이 공유하지 않고
+		fixmap 영역 위주로 사용한다
+		- fixmap 영역을 사용하기 위해 bm_pud[] 테이블을 pgd 엔트리와 연결하여 활성화한 후에
+		  fixmap 시작 주소에 해당하는 pud 엔트리 주소를 구한다.
+	*/
+
+		// pgd_none(x) : x.pgd가 없으면 1
 		if (pgd_none(pgd))
 			__pgd_populate(pgdp, __pa_symbol(bm_pud), PUD_TYPE_TABLE);
 		pudp = fixmap_pud(addr);
 	}
+
+	/*
+		pud에 연결된 pmd 테이블이 없는 경우 bm_pmd[] 테이블을 사용하여 연결한다.
+	*/
 	if (pud_none(READ_ONCE(*pudp)))
 		__pud_populate(pudp, __pa_symbol(bm_pmd), PMD_TYPE_TABLE);
+	/*
+		addr 주소에 해당하는 pmd 엔트리 포인터를 알아온다.
+	*/
 	pmdp = fixmap_pmd(addr);
+	/*
+		pmd에 연결된 pte 테이블이 없는 경우 bm_pte[] 테이블을 사용하여 연결한다.
+	*/
 	__pmd_populate(pmdp, __pa_symbol(bm_pte), PMD_TYPE_TABLE);
 
 	/*
 	 * The boot-ioremap range spans multiple pmds, for which
 	 * we are not prepared:
 	 */
+
+	/*
+		early_ioremap() 함수에서 사용하는 btmap 영역의 시작과 끝에 해당하는 
+		pud 테이블의 pmd 엔트리 주소 값들이 위에서 읽어온 pmd 엔트리 주소 값과 다른 경우
+		경고 메세지를 출력한다.
+	*/
 	BUILD_BUG_ON((__fix_to_virt(FIX_BTMAP_BEGIN) >> PMD_SHIFT)
 		     != (__fix_to_virt(FIX_BTMAP_END) >> PMD_SHIFT));
 
@@ -850,28 +952,45 @@ void __init early_fixmap_init(void)
  * Unusually, this is also called in IRQ context (ghes_iounmap_irq) so if we
  * ever need to use IPIs for TLB broadcasting, then we're in trouble here.
  */
+/*
+	__set_fixmap() : fixmap의 특정 인덱스에 플래그 정보와 같이 매핑하기
+					- 
+*/
 void __set_fixmap(enum fixed_addresses idx,
 			       phys_addr_t phys, pgprot_t flags)
 {
+	// fixed_addresses 에서 idx 인덱스가 가리키는 가상 주소를 구함
 	unsigned long addr = __fix_to_virt(idx);
 	pte_t *ptep;
 
+	// fixed_addresses가 FIX_HOLE ~ __end_of_fixed_addresses 까지 이므로 범위 검사
 	BUG_ON(idx <= FIX_HOLE || idx >= __end_of_fixed_addresses);
 
+	// 가상 주소 addr에 해당하는 pte 엔트리 주소를 구한다.
 	ptep = fixmap_pte(addr);
 
+	// flags 속성이 있으면, flags 속성을 더해 pte 엔트리를 매핑함
 	if (pgprot_val(flags)) {
 		set_pte(ptep, pfn_pte(phys >> PAGE_SHIFT, flags));
 	} else {
+	/*
+		 flags 속성이 없으면, pte 엔트리를 언매핑한다
+		 - 그 후 pte 엔트리가 수정되었으므로 해당 페이지 1개의 영역에 대해 tlb_flush를 수행
+	*/
 		pte_clear(&init_mm, addr, ptep);
 		flush_tlb_kernel_range(addr, addr+PAGE_SIZE);
 	}
 }
 
+/*
+	__fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO)
+*/
 void *__init __fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 {
-	//FIX_FDT = 10
-	// 
+	/*
+		FIX_FDT = 10
+		FIX_FDT 가상 주소를 dt_virt_base에 저장
+	*/ 
 	const u64 dt_virt_base = __fix_to_virt(FIX_FDT);
 	int offset;
 	void *dt_virt;
@@ -883,6 +1002,12 @@ void *__init __fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 	 * fields of the FDT header after mapping the first chunk, double check
 	 * here if that is indeed the case.
 	 */
+
+	/*
+		FDT 헤더에서 magic과 size 필드에 항상 접근할 수 있도록
+		- MIN_FDT_ALIGN이 8이상인지 -> 에러 메세지
+		- dt_phys가 존재하는지 / MIN_FDT_ALIGN으로 정렬되어 있는지 -> NULL 리턴
+	*/
 	BUILD_BUG_ON(MIN_FDT_ALIGN < 8);
 	if (!dt_phys || dt_phys % MIN_FDT_ALIGN)
 		return NULL;
@@ -899,9 +1024,23 @@ void *__init __fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 	 */
 	BUILD_BUG_ON(dt_virt_base % SZ_2M);
 
+	/*
+		SWAPPER_TABLE_SHIFT : 30
+		
+		FIX_FDT_END 가상 주소와 FIX_BTMAP_BEGIN 가상 주소가 같은 PUD table에 있지 않으면 경고
+	*/
 	BUILD_BUG_ON(__fix_to_virt(FIX_FDT_END) >> SWAPPER_TABLE_SHIFT !=
 		     __fix_to_virt(FIX_BTMAP_BEGIN) >> SWAPPER_TABLE_SHIFT);
 
+	
+	/*
+		SWAPPER_BLOCK_SIZE : 1 << 21
+
+		dt_phys % SWAPPER_BLOCK_SIZE : pte, page offset만 offset에 저장
+
+		dt_virt = ************************************************?? 이걸 해주는 의미?
+		
+	*/
 	offset = dt_phys % SWAPPER_BLOCK_SIZE;
 	dt_virt = (void *)dt_virt_base + offset;
 
@@ -909,6 +1048,9 @@ void *__init __fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 	create_mapping_noalloc(round_down(dt_phys, SWAPPER_BLOCK_SIZE),
 			dt_virt_base, SWAPPER_BLOCK_SIZE, prot);
 
+	/*
+		magic number, size 검사
+	*/
 	if (fdt_magic(dt_virt) != FDT_MAGIC)
 		return NULL;
 
@@ -925,6 +1067,8 @@ void *__init __fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 
 /*
 	fixmap_remap_fdt() : DTB를 fixmap에 매핑하고 가상주소를 구함
+
+	fixmap_remap_fdt(dt_phys)
 */
 void *__init fixmap_remap_fdt(phys_addr_t dt_phys)
 {
