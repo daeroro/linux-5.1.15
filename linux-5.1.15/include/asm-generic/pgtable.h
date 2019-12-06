@@ -538,6 +538,12 @@ static inline pgprot_t pgprot_modify(pgprot_t oldprot, pgprot_t newprot)
 })
 #endif
 
+/*
+#define PUD_SHIFT		ARM64_HW_PGTABLE_LEVEL_SHIFT(1) = 30
+#define PUD_SIZE		(_AC(1, UL) << PUD_SHIFT) = 1<<30
+#define PUD_MASK		(~(PUD_SIZE-1))  = ~(1<<30 -1)
+#define PTRS_PER_PUD		PTRS_PER_PTE
+*/
 #ifndef pud_addr_end
 #define pud_addr_end(addr, end)						\
 ({	unsigned long __boundary = ((addr) + PUD_SIZE) & PUD_MASK;	\

@@ -244,6 +244,13 @@ static void init_pmd(pud_t *pudp, unsigned long addr, unsigned long end,
 	pmd_clear_fixmap();
 }
 
+/*
+	alloc_init_cont_pmd() : pmd 테이블 할당 및 초기화
+
+	- pmd 및 pte 테이블은 pgd 및 pud 테이블과 다르게 contiguous 매핑이 가능함
+	- pmd contiguous 매핑 사이즈 단위(pmd contiguous 최대 횟수 * pmd 사이즈)로 루프를 돌며
+	  init_pmd() 함수를 호출한다.
+*/
 static void alloc_init_cont_pmd(pud_t *pudp, unsigned long addr,
 				unsigned long end, phys_addr_t phys,
 				pgprot_t prot,
@@ -287,6 +294,7 @@ static inline bool use_1G_block(unsigned long addr, unsigned long next,
 	if (PAGE_SHIFT != 12)
 		return false;
 
+	// PUD_MASK = PUD_SIZE - 1 = 1<<30 -1
 	if (((addr | next | phys) & ~PUD_MASK) != 0)
 		return false;
 
@@ -296,12 +304,14 @@ static inline bool use_1G_block(unsigned long addr, unsigned long next,
 /*
 	alloc_init_pud() : pud 테이블 생성하기
 
-	- 물리 주소(phys)를 size만큼 가상 주소(addr)에 해당하는 pud 테이블 엔트리에 매핑
-	- pud 매핑을 수행하면 그 뒤에 따르는 pmd 및 pte 테이블까지 각 엔트리 매핑하고 연결
-	- 연결되는 하위 페이지 테이블을 할당받아야 할 때 인자로 전달받은 pgtable_alloc 함수 호출
+	- 가상 주소 @addr ~ @end 범위에 물리 주소 @phys부터 @prot 속성으로 매핑한다.
+	- 요청 범위에 때해 pud 사이즈 단위로 순회
+	- 단위 매핑 공간이 1G 블럭 단위로 정렬되는 경우 블럭 매핑 수행
+	  그렇지 않으면 pud 사이즈에 해당하는 공간을 처리하기 위해 
+	  다음 레벨인 pmd 테이블 매핑을 수행하러 alloc_init_cont_pmd()를 호출한다.
 
-	- 매핑할 주소 범위가 1G 단위에 해당, pud 섹션 매핑이 가능한 상태
-		-> pmd 테이블을 할당받아 연결하지 않고 직접 pud 섹션 페이지 패밍을 수행함.
+	
+	alloc_init_pud(pgdp, addr, next, phys, prot, pgtable_alloc, flags);
 */
 static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 			   phys_addr_t phys, pgprot_t prot,
@@ -312,24 +322,51 @@ static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 	pud_t *pudp;
 	pgd_t pgd = READ_ONCE(*pgdp);
 
+	// pgd 엔트리가 NULL인 경우에는 pud 테이블을 할당받아 연결한다.
 	if (pgd_none(pgd)) {
 		phys_addr_t pud_phys;
 		BUG_ON(!pgtable_alloc);
+
+		/* pgtalbe_alloc() 이 NULL이 아닌 경우에
+		   pud 페이지 테이블을 할당해 pud_phys에 물리 주소를 저장
+		*/
 		pud_phys = pgtable_alloc();
+		// pgdp 엔트리가 pud_phys 테이블을 가리키도록 매핑 설정
 		__pgd_populate(pgdp, pud_phys, PUD_TYPE_TABLE);
 		pgd = READ_ONCE(*pgdp);
 	}
 	BUG_ON(pgd_bad(pgd));
 
+	/*
+		fixmap의 FIX_PUD 가상 주소에 addr을 매핑한다
+
+		- fixmap에서 pgd, pud, pmd, pte 테이블용으로 각각의 페이지가 준비되어 있음
+		- 할당받은 페이지 테이블이 memblock으로부터 막 할당받아 아직 가상 주소에 매핑되어
+		  사용하지 않는 경우 임시로 가상 주소에 매핑시켜 사용할 수 있도록 준비된 페이지
+		- 페이지 테이블의 첫 구성 시에 사용함
+
+		pgdp : pgd 테이블 엔트리 주소
+		addr : fixmap 가상 주소
+	*/
 	pudp = pud_set_fixmap_offset(pgdp, addr);
 	do {
 		pud_t old_pud = READ_ONCE(*pudp);
 
+		/*
+			매핑 진행 중인 가상 주소 addr와 가상 주소 끝 end 범위 내에서
+			다음 pud 엔트리에 해당하는 가상 주소를 구한다.
+
+			- 더이상 처리할 수 없으면 가상 끝 주소(end)를 리턴한다.
+		*/
 		next = pud_addr_end(addr, end);
 
 		/*
 		 * For 4K granule only, attempt to put down a 1GB block
 		 */
+		/*
+			4K 페이지 테이블을 사용하면서 addr, next, phys가 1G 단위로 정렬된 경우
+			pud 타입 섹션 매핑 설정 -> 한 번에 1G 페이지가 매핑됨
+		*/
 		if (use_1G_block(addr, next, phys) &&
 		    (flags & NO_BLOCK_MAPPINGS) == 0) {
 			pud_set_huge(pudp, phys, prot);
@@ -341,15 +378,28 @@ static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 			BUG_ON(!pgattr_change_is_safe(pud_val(old_pud),
 						      READ_ONCE(pud_val(*pudp))));
 		} else {
+
+			/*
+				가상 주소 addr에 해당하는 pud 엔트리가 없으면 pmd 테이블을 생성하고 가리키게 함
+			*/
 			alloc_init_cont_pmd(pudp, addr, next, phys, prot,
 					    pgtable_alloc, flags);
 
 			BUG_ON(pud_val(old_pud) != 0 &&
 			       pud_val(old_pud) != READ_ONCE(pud_val(*pudp)));
 		}
+
+		// 물리 주소 phys에 next - addr 한 값을 더한다ㅏ.
 		phys += next - addr;
+
+	/*
+		pudp가 다음 pud 엔트리를 가리키도록 포인터를 증가시킴
+		처리할 가상 주소 addr에 next를 설정
+		매핑이 아직 다 완료 되지 않았으면 루프를 돈다.
+	*/
 	} while (pudp++, addr = next, addr != end);
 
+	// pmd용 fixmap 페이지를 매핑 해제한다.
 	pud_clear_fixmap();
 }
 
@@ -358,6 +408,7 @@ static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 	phys = round_down(dt_phys, SWAPPER_BLOCK_SIZE)
 	virt = dt_virt_base
 	size = SWAPPER_BLOCK_SIZE
+	pgtable_alloc = NULL
 	prot = prot
 */
 static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
@@ -393,15 +444,25 @@ static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
 
 	// 끝 주소를 end에 저장
 	end = addr + length;
+	
 	do {
 		/*
-			addr : 가상 주소 virt의 페이지 오프셋을 0으로
-			end : BLOCK의 끝 주소
+			addr : 가상 주소 virt의 페이지 오프셋(12bits)을 0으로
+			end : addr이 가리키는 pgd 블록의 끝 주소
+
+			next에 addr의 하나의 pgd 블록의 끝을 저장
 		*/		
 		next = pgd_addr_end(addr, end);
+		// pud 테이블 생성
 		alloc_init_pud(pgdp, addr, next, phys, prot, pgtable_alloc,
 			       flags);
+		// 물리 주소를 pgd 블록 크기만큼 이동
 		phys += next - addr;
+		
+	/*
+	 	pgdp 엔트리 증가, addr 업데이트
+		addr == end -> 크기가 0인 지점, 매핑할 물리 주소의 끝지점에서 while문 탈출
+	*/
 	} while (pgdp++, addr = next, addr != end);
 }
 
@@ -438,6 +499,7 @@ static void __init create_mapping_noalloc(phys_addr_t phys, unsigned long virt,
 		return;
 	}
 	/*
+		init_mm.pgd = swapper_pg_dir
 		phys = round_down(dt_phys, SWAPPER_BLOCK_SIZE)
 		virt = dt_virt_base
 		size = SWAPPER_BLOCK_SIZE
@@ -1038,7 +1100,8 @@ void *__init __fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 
 		dt_phys % SWAPPER_BLOCK_SIZE : pte, page offset만 offset에 저장
 
-		dt_virt = ************************************************?? 이걸 해주는 의미?
+		dt_virt : dt_virt_base에서 BLOCK 크기에 해당하는 offset 만큼을 더해서
+				 dt_phys가 가리키는 가상 주소를 구함
 		
 	*/
 	offset = dt_phys % SWAPPER_BLOCK_SIZE;
@@ -1068,13 +1131,14 @@ void *__init __fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 /*
 	fixmap_remap_fdt() : DTB를 fixmap에 매핑하고 가상주소를 구함
 
-	fixmap_remap_fdt(dt_phys)
+	fixmap_remap_fdt(dt_phys) - dt_phys : fdt의 물리 주소
 */
 void *__init fixmap_remap_fdt(phys_addr_t dt_phys)
 {
 	void *dt_virt;
 	int size;
 
+	// dt_phys의 가상 주소를 dt_virt에 저장, 크기를 size에 저장
 	dt_virt = __fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO);
 	if (!dt_virt)
 		return NULL;
@@ -1099,6 +1163,11 @@ int __init arch_ioremap_pmd_supported(void)
 	return !IS_ENABLED(CONFIG_ARM64_PTDUMP_DEBUGFS);
 }
 
+
+/*
+	
+	pud_set_huge(pudp, phys, prot);
+*/
 int pud_set_huge(pud_t *pudp, phys_addr_t phys, pgprot_t prot)
 {
 	pgprot_t sect_prot = __pgprot(PUD_TYPE_SECT |

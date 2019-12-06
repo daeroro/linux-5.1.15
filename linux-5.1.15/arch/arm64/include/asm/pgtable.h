@@ -514,6 +514,9 @@ static inline void pte_unmap(pte_t *pte) { }
 #define pud_present(pud)	pte_present(pud_pte(pud))
 #define pud_valid(pud)		pte_valid(pud_pte(pud))
 
+/*
+	set_pud() : pud 테이블 엔트리 포인터 @pudp에 @pud 값을 기록하여 매핑한다.
+*/
 static inline void set_pud(pud_t *pudp, pud_t pud)
 {
 #ifdef __PAGETABLE_PUD_FOLDED
