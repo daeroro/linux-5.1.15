@@ -404,12 +404,21 @@ static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 }
 
 /*
-	pgdir = swapper_pg_dir
+	__create_pgd_mapping() : 페이지 테이블 @pgdir에서 가상 주소 @virt 부터 @size 만큼에 해당하는
+							pgd 테이블 엔트리에 물리 주소 @phys부터 매핑한다.
+				
+				- 요청 범위에 대해 pgd 사이즈 단위로 순회하며 각각의 단위 매핑을 처리하기 위해
+				  다음 레벨인 pud 테이블 매핑을 수행하러 alloc_init_pud() 함수를 호출
+				- 연결될 하위 페이지 테이블을 할당 받아야 할 때 인자로 전달받은
+				  pgtable_alloc() 함수를 호출하여 페이지 테이블을 할당한다.:w
+	
+	pgdir = init_pg_dir
 	phys = round_down(dt_phys, SWAPPER_BLOCK_SIZE)
 	virt = dt_virt_base
 	size = SWAPPER_BLOCK_SIZE
 	pgtable_alloc = NULL
 	prot = prot
+	flags = NO_CONT_MAPPINGS
 */
 static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
 				 unsigned long virt, phys_addr_t size,
@@ -435,14 +444,14 @@ static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
 	// addr에 가상 주소 virt의 페이지 오프셋을 0으로 만들어 저장
 	addr = virt & PAGE_MASK;
 	/*
-		size + (virt & ~PAGE_MASK)를 페이지 단위로 정렬한 크기를 length에 저장
+		length : 매핑할 페이지 바이트 수를 계산해서 저장
 
 		?? virt & ~PAGE_MASK를 왜 더하는 거임 ??
 		?? ********************************************************??
 	*/
 	length = PAGE_ALIGN(size + (virt & ~PAGE_MASK));
 
-	// 끝 주소를 end에 저장
+	// end : 매핑 끝 가상 주소를 저장
 	end = addr + length;
 	
 	do {
@@ -450,18 +459,26 @@ static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
 			addr : 가상 주소 virt의 페이지 오프셋(12bits)을 0으로
 			end : addr이 가리키는 pgd 블록의 끝 주소
 
-			next에 addr의 하나의 pgd 블록의 끝을 저장
+			next : 다음 처리할 pgd 엔트리를 구해둠
+			- 매핑 진행 중인 가상 주소(addr)와 가상 끝 주소(end) 범위 내에서
+			  다음 pgd에 해당하는 가상 주소를 구한다.
+			- 더 이상 처리할 수 없으면 가상 끝 주소(end)를 리턴한다.
 		*/		
 		next = pgd_addr_end(addr, end);
-		// pud 테이블 생성
+
+		/*
+			가상 주소 addr에 해당하는 pgd 엔트리가 없으면 pud 테이블을 생성하고 가리키게 함
+		*/
 		alloc_init_pud(pgdp, addr, next, phys, prot, pgtable_alloc,
 			       flags);
-		// 물리 주소를 pgd 블록 크기만큼 이동
+		/*
+			루프를 순회하기 위해 다음에 매핑할 pgd 엔트리의 물리 주소를 구함	
+		*/
 		phys += next - addr;
 		
 	/*
-	 	pgdp 엔트리 증가, addr 업데이트
-		addr == end -> 크기가 0인 지점, 매핑할 물리 주소의 끝지점에서 while문 탈출
+		다음 pgd엔트리를 가리키도록 포인터 증가
+		처리할 가상 주소(addr)에 next를 설정, 매핑이 완료 되지 않았으면 루프를 돔.
 	*/
 	} while (pgdp++, addr = next, addr != end);
 }
@@ -499,11 +516,13 @@ static void __init create_mapping_noalloc(phys_addr_t phys, unsigned long virt,
 		return;
 	}
 	/*
-		init_mm.pgd = swapper_pg_dir
+		init_mm.pgd = init_pg_dir
 		phys = round_down(dt_phys, SWAPPER_BLOCK_SIZE)
 		virt = dt_virt_base
 		size = SWAPPER_BLOCK_SIZE
 		prot = prot
+		NO_CONT_MAPPINGS : 연속된 물리 페이지의 매핑 시 TBL 엔트리의 contiguous 비트를 설정
+							-> TBL 엔트리를 절약할 수 있는데 이를 못하게 제한하는 플래그
 	*/
 	__create_pgd_mapping(init_mm.pgd, phys, virt, size, prot, NULL,
 			     NO_CONT_MAPPINGS);
@@ -1098,7 +1117,7 @@ void *__init __fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 	/*
 		SWAPPER_BLOCK_SIZE : 1 << 21
 
-		dt_phys % SWAPPER_BLOCK_SIZE : pte, page offset만 offset에 저장
+		dt_phys % SWAPPER_BLOCK_SIZE : SWAPPER_BLOCK_SIZE 크기로 round down함
 
 		dt_virt : dt_virt_base에서 BLOCK 크기에 해당하는 offset 만큼을 더해서
 				 dt_phys가 가리키는 가상 주소를 구함
@@ -1138,7 +1157,9 @@ void *__init fixmap_remap_fdt(phys_addr_t dt_phys)
 	void *dt_virt;
 	int size;
 
-	// dt_phys의 가상 주소를 dt_virt에 저장, 크기를 size에 저장
+	/*
+		- dt_phys의 가상 주소를 dt_virt에 저장, 크기를 size에 저장
+	*/
 	dt_virt = __fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO);
 	if (!dt_virt)
 		return NULL;
