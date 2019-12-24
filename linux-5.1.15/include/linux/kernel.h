@@ -58,6 +58,7 @@
  * as wide as the result!), and we want to evaluate the macro
  * arguments just once each.
  */
+// (phys_addr_t)(1<<21 - 1)
 #define __round_mask(x, y) ((__typeof__(x))((y)-1))
 /**
  * round_up - round up to next specified power of 2
@@ -76,7 +77,13 @@
  * Rounds @x down to next multiple of @y (which must be a power of 2).
  * To perform arbitrary rounding down, use rounddown() below.
  */
-#define round_down(x, y) ((x) & ~__round_mask(x, y))
+/*
+	x = dt_phys
+	y = SWAPPER_BLOCK_SIZE = 1<<21
+
+	
+*/
+		#define round_down(x, y) ((x) & ~__round_mask(x, y))
 
 /**
  * FIELD_SIZEOF - get the size of a struct's field

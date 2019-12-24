@@ -828,6 +828,10 @@ int __init_memblock memblock_free(phys_addr_t base, phys_addr_t size)
 	return memblock_remove_range(&memblock.reserved, base, size);
 }
 
+/*
+	memblock_reserve() : 물리 메모리 시작 주소 @base부터 @size만큼을
+						 reserved memblock에 추가한다
+*/
 int __init_memblock memblock_reserve(phys_addr_t base, phys_addr_t size)
 {
 	phys_addr_t end = base + size - 1;
@@ -835,6 +839,7 @@ int __init_memblock memblock_reserve(phys_addr_t base, phys_addr_t size)
 	memblock_dbg("memblock_reserve: [%pa-%pa] %pF\n",
 		     &base, &end, (void *)_RET_IP_);
 
+	// MAX_NUMNODES = 1<<2 = 4
 	return memblock_add_range(&memblock.reserved, base, size, MAX_NUMNODES, 0);
 }
 

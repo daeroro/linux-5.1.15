@@ -526,6 +526,8 @@ static inline pgprot_t pgprot_modify(pgprot_t oldprot, pgprot_t newprot)
  * vma end wraps to 0, rounded up __boundary may wrap to 0 throughout.
  */
 
+// PGDIR_SIZE = 1<<39 = 512G
+// PGDIR_MASK = ~(1<<39 - 1) 
 #define pgd_addr_end(addr, end)						\
 ({	unsigned long __boundary = ((addr) + PGDIR_SIZE) & PGDIR_MASK;	\
 	(__boundary - 1 < (end) - 1)? __boundary: (end);		\

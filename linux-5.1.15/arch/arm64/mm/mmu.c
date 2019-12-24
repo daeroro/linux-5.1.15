@@ -172,6 +172,15 @@ static void init_pte(pmd_t *pmdp, unsigned long addr, unsigned long end,
 	pte_clear_fixmap();
 }
 
+/*
+	alloc_init_cont_pte() : 가상 주소 @addr~@end 범위에 물리 주소 @phys부터 @prot 속성으로 매핑
+
+						- 요청 범위에 대해 cont pte 사이즈 단위로 순회하며
+						  cont pte 사이즈에 해당하는 매핑을 수행하기 위해 init_pte() 호출
+						- 각각의 단위 매핑 공간이 cont pte 단위로 사이즈와 가상 주소 및
+						  물리 주소가 정렬되는 경우 속성에 연속(contiguous) 비트를 추가한다.
+						- 연속 매핑 비트 사용 시, pte 엔트리에 해당하는 TLB 엔트리 절약 가능
+*/
 static void alloc_init_cont_pte(pmd_t *pmdp, unsigned long addr,
 				unsigned long end, phys_addr_t phys,
 				pgprot_t prot,
@@ -182,6 +191,10 @@ static void alloc_init_cont_pte(pmd_t *pmdp, unsigned long addr,
 	pmd_t pmd = READ_ONCE(*pmdp);
 
 	BUG_ON(pmd_sect(pmd));
+
+	/*
+		pmd 엔트리가 매핑되어 있지 않아 NULL 인 경우 pte 테이블을 할당받아 연결한다.
+	*/
 	if (pmd_none(pmd)) {
 		phys_addr_t pte_phys;
 		BUG_ON(!pgtable_alloc);
@@ -190,23 +203,42 @@ static void alloc_init_cont_pte(pmd_t *pmdp, unsigned long addr,
 		pmd = READ_ONCE(*pmdp);
 	}
 	BUG_ON(pmd_bad(pmd));
-
+	
 	do {
 		pgprot_t __prot = prot;
-
+		
+		/*
+			루프를 돌며 다음 처리할 pmd 엔트리를 구해 둔다.
+		*/
 		next = pte_cont_addr_end(addr, end);
 
 		/* use a contiguous mapping if the range is suitably aligned */
+		/*
+			cont pte 사이즈 이면서 가상 주소, 물리 주소가 모두 cont pte 사이즈로 정렬 된 경우
+			매핑 플래그를 설정한다.
+
+			ex) 4K 페이지 사용 : 4K * 16 = 64KB 단위
+				16K 페이지 사용: 16K * 128 = 2MB 단위
+				64K 페이지 사용: 64K * 32 = 2MB 단위
+		*/
 		if ((((addr | next | phys) & ~CONT_PTE_MASK) == 0) &&
 		    (flags & NO_CONT_MAPPINGS) == 0)
 			__prot = __pgprot(pgprot_val(prot) | PTE_CONT);
 
+		// pte 엔트리와 해당 범위의 페이지들을 매핑한다
 		init_pte(pmdp, addr, next, phys, __prot);
 
 		phys += next - addr;
 	} while (addr = next, addr != end);
 }
 
+/*
+	init_pmd() : 가상주소 @addr ~ @end 범위에 물리 주소 @phys부터 @prot 속성으로 매핑함
+
+				- 요청 범위에 대해 pmd 사이즈 단위로 순회하며
+				  각각의 단위 매핑 공간이 섹션 단위로 정렬되는 경우 섹션 매핑 수행,
+				  또는 alloc_init_cont_pte() 함수를 호출, pte 레벨에서 매핑을 계속함
+*/
 static void init_pmd(pud_t *pudp, unsigned long addr, unsigned long end,
 		     phys_addr_t phys, pgprot_t prot,
 		     phys_addr_t (*pgtable_alloc)(void), int flags)
@@ -214,13 +246,33 @@ static void init_pmd(pud_t *pudp, unsigned long addr, unsigned long end,
 	unsigned long next;
 	pmd_t *pmdp;
 
+	/*
+		처리할 pmd 테이블을 fixmap에 매핑하고
+		가상 주소 @addr에 해당하는 pmd 엔트리 포인터를 @pmdp에 저장
+	*/
 	pmdp = pmd_set_fixmap_offset(pudp, addr);
 	do {
+		// 루프를 돌며 pmd 엔트리 값을 읽어 old_pmd에 저장해 둠
 		pmd_t old_pmd = READ_ONCE(*pmdp);
 
+		/*
+			 다음에 처리할 pmd 엔트리를 구해둠
+
+			- 가상 주소(addr)와 가상 끝 주소(end) 범위 내에서 
+			  다음 pmd 엔트리에 해당하는 가상 주소를 구한다.
+			- 더 이상 처리할 수 없으면 가상 끝 주소(end)를 리턴한다.
+		*/
 		next = pmd_addr_end(addr, end);
 
 		/* try section mapping first */
+		/*
+			pmd 사이즈 이면서 가상 주소, 물리 주소가 모두 pmd 사이즈로 정렬된 경우 
+			pmd 타입 섹션 매핑을 수행한다.
+
+			ex) 4K 페이지, VA_BITS = 48 인 경우 pmd 사이즈는 2M이다
+
+			SECTION_MASK = ~(1<<21 - 1)
+		*/
 		if (((addr | next | phys) & ~SECTION_MASK) == 0 &&
 		    (flags & NO_BLOCK_MAPPINGS) == 0) {
 			pmd_set_huge(pmdp, phys, prot);
@@ -232,15 +284,22 @@ static void init_pmd(pud_t *pudp, unsigned long addr, unsigned long end,
 			BUG_ON(!pgattr_change_is_safe(pmd_val(old_pmd),
 						      READ_ONCE(pmd_val(*pmdp))));
 		} else {
+
+		/*
+			다음 레벨 pte 테이블을 할당하고 범위 내의 페이지들을 매핑한다
+		*/
 			alloc_init_cont_pte(pmdp, addr, next, phys, prot,
 					    pgtable_alloc, flags);
 
 			BUG_ON(pmd_val(old_pmd) != 0 &&
 			       pmd_val(old_pmd) != READ_ONCE(pmd_val(*pmdp)));
 		}
+
+		// 다음 처리할 pmd 엔트리를 위해 루프를 돈다
 		phys += next - addr;
 	} while (pmdp++, addr = next, addr != end);
 
+	// pmd 테이블을 fixmap에서 해제한다.
 	pmd_clear_fixmap();
 }
 
@@ -250,6 +309,8 @@ static void init_pmd(pud_t *pudp, unsigned long addr, unsigned long end,
 	- pmd 및 pte 테이블은 pgd 및 pud 테이블과 다르게 contiguous 매핑이 가능함
 	- pmd contiguous 매핑 사이즈 단위(pmd contiguous 최대 횟수 * pmd 사이즈)로 루프를 돌며
 	  init_pmd() 함수를 호출한다.
+
+	- 가상 주소 @addr ~ @end 범위에 물리 주소 @phys부터 @prot 속성으로 매핑한다.
 */
 static void alloc_init_cont_pmd(pud_t *pudp, unsigned long addr,
 				unsigned long end, phys_addr_t phys,
@@ -263,6 +324,12 @@ static void alloc_init_cont_pmd(pud_t *pudp, unsigned long addr,
 	 * Check for initial section mappings in the pgd/pud.
 	 */
 	BUG_ON(pud_sect(pud));
+
+	/*
+		pud 엔트리가 매핑되어 있지 않아 NULL이거나
+		pud 섹션 페이지 매핑(64K 페이지가 아니면서 3레벨 이상의 변환 테이블에서만 유효)된 경우
+		pmd 테이블을 할당받아 연결한다.
+	*/
 	if (pud_none(pud)) {
 		phys_addr_t pmd_phys;
 		BUG_ON(!pgtable_alloc);
@@ -275,13 +342,27 @@ static void alloc_init_cont_pmd(pud_t *pudp, unsigned long addr,
 	do {
 		pgprot_t __prot = prot;
 
+		/*
+			 처리할 cont pmd 엔트리에 대한 범위를 알아온다. 다음 주소는 next에 반환
+
+			ex) 4K 페이지, VA_BITS = 48 시스템에서 cont pmd 사이즈는 
+				- CONT_PMDS(16번) * PMD_SIZE(2M) = CONT_PMD_SIZE(32M) 이다
+
+		*/
 		next = pmd_cont_addr_end(addr, end);
 
 		/* use a contiguous mapping if the range is suitably aligned */
+		/*
+			cont pmd 사이즈이면서 가상 주소, 물리 주소가 모두 cont pmd 사이즈로 정렬된 경우
+			-> PTE_CONT 연속 매핑 플래그를 설정한다.
+		*/
 		if ((((addr | next | phys) & ~CONT_PMD_MASK) == 0) &&
 		    (flags & NO_CONT_MAPPINGS) == 0)
 			__prot = __pgprot(pgprot_val(prot) | PTE_CONT);
 
+		/*
+			pmd 엔트리 아래에 연결된 pte 테이블을 생성하고 이를 가리키게 한다.
+		*/
 		init_pmd(pudp, addr, next, phys, __prot, pgtable_alloc, flags);
 
 		phys += next - addr;
@@ -294,7 +375,7 @@ static inline bool use_1G_block(unsigned long addr, unsigned long next,
 	if (PAGE_SHIFT != 12)
 		return false;
 
-	// PUD_MASK = PUD_SIZE - 1 = 1<<30 -1
+	// PUD_MASK = ~(PUD_SIZE - 1) = ~(1<<30 -1)
 	if (((addr | next | phys) & ~PUD_MASK) != 0)
 		return false;
 
@@ -335,6 +416,10 @@ static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 		__pgd_populate(pgdp, pud_phys, PUD_TYPE_TABLE);
 		pgd = READ_ONCE(*pgdp);
 	}
+
+	/*
+		pgd_bad() : 섹션 매핑이나 엔트리가 할당되지 않았을 때 1이 됨
+	*/
 	BUG_ON(pgd_bad(pgd));
 
 	/*
@@ -410,7 +495,7 @@ static void alloc_init_pud(pgd_t *pgdp, unsigned long addr, unsigned long end,
 				- 요청 범위에 대해 pgd 사이즈 단위로 순회하며 각각의 단위 매핑을 처리하기 위해
 				  다음 레벨인 pud 테이블 매핑을 수행하러 alloc_init_pud() 함수를 호출
 				- 연결될 하위 페이지 테이블을 할당 받아야 할 때 인자로 전달받은
-				  pgtable_alloc() 함수를 호출하여 페이지 테이블을 할당한다.:w
+				  pgtable_alloc() 함수를 호출하여 페이지 테이블을 할당한다.
 	
 	pgdir = init_pg_dir
 	phys = round_down(dt_phys, SWAPPER_BLOCK_SIZE)
@@ -434,7 +519,7 @@ static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
 	 * If the virtual and physical address don't have the same offset
 	 * within a page, we cannot map the region as the caller expects.
 	 */
-	
+	// ~PAGE_MASK = 1<<12 - 1
 	// 물리 주소와 가상 주소에서 PAGE 오프셋은 같아야 함 ->  같지 않으면 return
 	if (WARN_ON((phys ^ virt) & ~PAGE_MASK))
 		return;
@@ -447,11 +532,13 @@ static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
 		length : 매핑할 페이지 바이트 수를 계산해서 저장
 
 		?? virt & ~PAGE_MASK를 왜 더하는 거임 ??
-		?? ********************************************************??
+
+		-> virt의 PAGE에서 오프셋이 0이 아니면 한 페이지를 더 할당해야함.
+		********************************************************
 	*/
 	length = PAGE_ALIGN(size + (virt & ~PAGE_MASK));
 
-	// end : 매핑 끝 가상 주소를 저장
+	// end : 매핑 끝 가상 주소를 저장(페이지 단위)
 	end = addr + length;
 	
 	do {
@@ -468,6 +555,9 @@ static void __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
 
 		/*
 			가상 주소 addr에 해당하는 pgd 엔트리가 없으면 pud 테이블을 생성하고 가리키게 함
+			
+			pgdp : pgdir에서 virt가 가리키는 pgd 테이블 엔트리 주소
+			addr : virt 페이지 단위 가상 주소
 		*/
 		alloc_init_pud(pgdp, addr, next, phys, prot, pgtable_alloc,
 			       flags);
@@ -1035,7 +1125,7 @@ void __init early_fixmap_init(void)
  */
 /*
 	__set_fixmap() : fixmap의 특정 인덱스에 플래그 정보와 같이 매핑하기
-					- 
+					 
 */
 void __set_fixmap(enum fixed_addresses idx,
 			       phys_addr_t phys, pgprot_t flags)
@@ -1047,7 +1137,7 @@ void __set_fixmap(enum fixed_addresses idx,
 	// fixed_addresses가 FIX_HOLE ~ __end_of_fixed_addresses 까지 이므로 범위 검사
 	BUG_ON(idx <= FIX_HOLE || idx >= __end_of_fixed_addresses);
 
-	// 가상 주소 addr에 해당하는 pte 엔트리 주소를 구한다.
+	// 가상 주소 addr에 해당하는 bm_pte[] 엔트리 주소를 구한다.
 	ptep = fixmap_pte(addr);
 
 	// flags 속성이 있으면, flags 속성을 더해 pte 엔트리를 매핑함
@@ -1115,9 +1205,9 @@ void *__init __fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 
 	
 	/*
-		SWAPPER_BLOCK_SIZE : 1 << 21
+		SWAPPER_BLOCK_SIZE : 1 << 21 (2M)
 
-		dt_phys % SWAPPER_BLOCK_SIZE : SWAPPER_BLOCK_SIZE 크기로 round down함
+		dt_phys % SWAPPER_BLOCK_SIZE : SWAPPER_BLOCK_SIZE 크기 내에서 offset을 구함
 
 		dt_virt : dt_virt_base에서 BLOCK 크기에 해당하는 offset 만큼을 더해서
 				 dt_phys가 가리키는 가상 주소를 구함
@@ -1127,6 +1217,7 @@ void *__init __fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 	dt_virt = (void *)dt_virt_base + offset;
 
 	/* map the first chunk so we can read the size from the header */
+	// round_down() : dt_phys 21~64비트
 	create_mapping_noalloc(round_down(dt_phys, SWAPPER_BLOCK_SIZE),
 			dt_virt_base, SWAPPER_BLOCK_SIZE, prot);
 
@@ -1140,6 +1231,10 @@ void *__init __fixmap_remap_fdt(phys_addr_t dt_phys, int *size, pgprot_t prot)
 	if (*size > MAX_FDT_SIZE)
 		return NULL;
 
+	/*
+		fdt가 SWAPPER_BLOCK_SIZE(2MB)보다 크다면 
+		한번 더 create_mapping_noalloc()을 실행해서 fdt를 매핑한다
+	*/
 	if (offset + *size > SWAPPER_BLOCK_SIZE)
 		create_mapping_noalloc(round_down(dt_phys, SWAPPER_BLOCK_SIZE), dt_virt_base,
 			       round_up(offset + *size, SWAPPER_BLOCK_SIZE), prot);
@@ -1164,6 +1259,9 @@ void *__init fixmap_remap_fdt(phys_addr_t dt_phys)
 	if (!dt_virt)
 		return NULL;
 
+	/*
+		물리 메모리 dt_phys부터 size 만큼을 reserved memblock에 추가한다.
+	*/
 	memblock_reserve(dt_phys, size);
 	return dt_virt;
 }
