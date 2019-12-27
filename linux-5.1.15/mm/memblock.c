@@ -115,17 +115,27 @@ static struct memblock_region memblock_reserved_init_regions[INIT_MEMBLOCK_RESER
 static struct memblock_region memblock_physmem_init_regions[INIT_PHYSMEM_REGIONS] __initdata_memblock;
 #endif
 
+/*
+	컴파일 타임에 3가지 타입의 memblock 영역을 관리하는 memblock을 준비한다.
+	- 처음 부트업에서는 각 memblock 영역들은 static 한 배열을 가리키고 있다가,
+	  확장성이 필요할 때 dynamic 하게 추가될 수 있다.
+*/
 struct memblock memblock __initdata_memblock = {
+	// memory 영역을 128개 엔트리 배열로 초기화 한다
 	.memory.regions		= memblock_memory_init_regions,
 	.memory.cnt		= 1,	/* empty dummy entry */
 	.memory.max		= INIT_MEMBLOCK_REGIONS,
 	.memory.name		= "memory",
 
+	/* reserved 영역을 128개 엔트리 배열로 초가화 한다.
+		- 이 배열의 크기는 추후 reserved 영역이 등록되어 가득 차면 2배 단위로 확장하여 사용 가능
+	*/
 	.reserved.regions	= memblock_reserved_init_regions,
 	.reserved.cnt		= 1,	/* empty dummy entry */
 	.reserved.max		= INIT_MEMBLOCK_RESERVED_REGIONS,
 	.reserved.name		= "reserved",
 
+	// physmem 영역을 4개 엔트리 배열로 초기화한다.
 #ifdef CONFIG_HAVE_MEMBLOCK_PHYS_MAP
 	.physmem.regions	= memblock_physmem_init_regions,
 	.physmem.cnt		= 1,	/* empty dummy entry */
@@ -133,7 +143,12 @@ struct memblock memblock __initdata_memblock = {
 	.physmem.name		= "physmem",
 #endif
 
+	// 비어 있는 영역의 검색을 위에서 아래 주소 방향으로 수행하도록 초깃갑 설정한다.
 	.bottom_up		= false,
+	/*
+		최대 메모리 할당 제한 값을 시스템이 사용하는 주소의 가장 큰 주소를 갖게 하여
+		제한이 없는 상태로 초기화한다.
+	*/
 	.current_limit		= MEMBLOCK_ALLOC_ANYWHERE,
 };
 
@@ -615,6 +630,11 @@ repeat:
 	base = obase;
 	nr_new = 0;
 
+/*
+	for (i = 0, rgn = &memblock_type->regions[0];			\
+	     i < memblock_type->cnt;					\
+	     i++, rgn = &memblock_type->regions[i])
+*/
 	for_each_memblock_type(idx, type, rgn) {
 		phys_addr_t rbase = rgn->base;
 		phys_addr_t rend = rbase + rgn->size;

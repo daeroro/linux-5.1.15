@@ -83,6 +83,22 @@ struct memblock_type {
  * @reserved: reserved memory regions
  * @physmem: all physical memory
  */
+
+/*
+	bottom_up : 메모리 할당을 아래에서 위로 검색하여 빈 공간을 할당 할 수 있도록 하는 옵션
+			- NUMA 시스템에서 메모리 핫플러그 기능을 사용하는 경우 효과가 있다.
+			- 커널이 할당한 메모리가 최대한 커널이 있는 low 메모리 주소 근처에 할당하게 유도,
+			  특정 노드의 메모리를 시스템에서 오프(off)할 때 그 노드에서 이미 할당되어 사용하는
+			  페이지들이 적은 경우 마이그레이션(migration)되는 비율을 최대한 억제하도록 설계
+			- 1이면 아래에서 위로 할당
+	current_limit : 커널 부트업 프로세스 루틴에서 커널 메모리의 할당을 제한하고자 사용
+			- 64비트 시스템에서 모든 물리 메모리에 대해 가상 메모리에 1:1 direct 매핑됨,
+			  별도로 lowmem 영역으로 관리하지 않기 때문에 current_limit에는
+			  커널 빌드시 주어진 MEMBLOCK_ALLOC_ANYWHERE(0xffffffff_ffffffff)값으로 지정됨
+	memory : 물리 메모리 영역 등록
+	reserved : reserved 영역 등록
+	physmem : 물리 메모리 영역 등록(일부 아키텍처 사용)
+*/
 struct memblock {
 	bool bottom_up;  /* is bottom up direction? */
 	phys_addr_t current_limit;
