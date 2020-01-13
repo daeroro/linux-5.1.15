@@ -164,8 +164,17 @@ static enum memblock_flags __init_memblock choose_memblock_flags(void)
 }
 
 /* adjust *@size so that (@base + *@size) doesn't overflow, return new size */
+/*
+ * memblock_cap_size() : 영역이 PHYS_ADDR_MAX를 넘어가는 경우(overflow) 넘친 부분을 잘라냄
+ */
 static inline phys_addr_t memblock_cap_size(phys_addr_t base, phys_addr_t *size)
 {
+    /*
+     * 영역이 넘치는 경우 사이즈가 재계산 되는데 사이즈가 1만큼 작아져
+     * 시스템의 마지막 주소 바이트를 사용할 수 없게된다.
+     * ex) 32bit : base = 0xffff_0000, size = 0xffff -> size = 0xffff(정상)
+     * ex) 32bit : base = 0xffff_0000, size = 0x10000 -> size = 0xffff(사이즈가 1이 작아짐)
+     */
 	return *size = min(*size, PHYS_ADDR_MAX - base);
 }
 
@@ -598,20 +607,36 @@ static void __init_memblock memblock_insert_region(struct memblock_type *type,
  * Return:
  * 0 on success, -errno on failure.
  */
+/*
+ *  memblock_add_range() : 요청받은 인자를 사용하여 새로운 memblock 영역을 추가하는데,
+ *                         기존 memblock 영역들과 중복되는 곳은 중복되지 않게 
+ *                         사이사이에 끼워넣고 마지막으로 인접 memblock과 경계가 붙어 있고
+ *                         플래그 타입이 같은 memblock들을 merge 한다.
+ */
 int __init_memblock memblock_add_range(struct memblock_type *type,
 				phys_addr_t base, phys_addr_t size,
 				int nid, enum memblock_flags flags)
 {
 	bool insert = false;
+    /*
+     * 추가할 base와 size를 이용하여 overflow가 발생하지 않도록 obase와 end에 설정
+     */
 	phys_addr_t obase = base;
 	phys_addr_t end = base + memblock_cap_size(base, &size);
 	int idx, nr_new;
 	struct memblock_region *rgn;
 
+    /*
+     * 인자로 받은 size가 0이면 return 0
+     */
 	if (!size)
 		return 0;
 
 	/* special case for empty array */
+    /*
+     * .size == 0  -> memblock 영역이 비어 있는 경우
+     * 중복 체크 없이 첫 memblock 영역에 대한 설정을 하고 함수를 종료한다.
+     */
 	if (type->regions[0].size == 0) {
 		WARN_ON(type->cnt != 1 || type->total_size);
 		type->regions[0].base = base;
@@ -622,6 +647,12 @@ int __init_memblock memblock_add_range(struct memblock_type *type,
 		return 0;
 	}
 repeat:
+    /*
+     * repeat 레이블을 통해 한 번 반복됨
+     * - first round - 끼워 넣어야 할 memblock 수를 체크할 목적으로 카운터(nr_new)만 증가시킴
+     * - second round - 루프를 돌며 실제로 memblock을 곳곳에 인접 memblock과 중복되지 않게 
+     *                  끼워 넣는다.
+     */
 	/*
 	 * The following is executed twice.  Once with %false @insert and
 	 * then with %true.  The first counts the number of regions needed
@@ -631,22 +662,44 @@ repeat:
 	nr_new = 0;
 
 /*
+ *
+#define for_each_memblock_type(i, memblock_type, rgn)			\
 	for (i = 0, rgn = &memblock_type->regions[0];			\
 	     i < memblock_type->cnt;					\
 	     i++, rgn = &memblock_type->regions[i])
+
+ - 요청한 memblock type에 대해 루프를 돈다.
 */
 	for_each_memblock_type(idx, type, rgn) {
+        /*
+         * rbase, rend는 기존에 존재하고 있던 memblock 영역들의 시작과 끝
+         * base, end는 새로 추가하는 memblock의 시작과 끝
+         */
 		phys_addr_t rbase = rgn->base;
 		phys_addr_t rend = rbase + rgn->size;
 
+        /*
+         * 기존에 존재하는 memblock 영역들이 정렬되어 있다고 할 때,
+         * 새로 추가하는 영역이 기존의 영역 아래에 위치하고 있으면 겹치지 않으므로 
+         * 반복 루프를 진행하지 않고 루프를 빠져나감
+         */
 		if (rbase >= end)
 			break;
+        /*
+         * 새로 추가하는 영역이 기존의 영역 위에 위치하고 있어 겹치지 않으므로
+         * 다음 영영과 비교하도록 continue 한다.
+         */
 		if (rend <= base)
 			continue;
 		/*
 		 * @rgn overlaps.  If it separates the lower part of new
 		 * area, insert that portion.
 		 */
+        /*
+         * 새로 추가하는 영역이 기존의 영역과 겹치므로
+         * 새로 추가하는 영역을 이 위치에 끼워 넣는다.
+         * - 끼워 넣는 영역은 기존의 영역과 겹치지 않는 크기로 조절
+         */
 		if (rbase > base) {
 #ifdef CONFIG_HAVE_MEMBLOCK_NODE_MAP
 			WARN_ON(nid != memblock_get_region_node(rgn));
@@ -659,10 +712,16 @@ repeat:
 						       flags);
 		}
 		/* area below @rend is dealt with, forget about it */
+        /*
+         * 새로 추가하는 영역의 base를 갱신
+         */
 		base = min(rend, end);
 	}
 
 	/* insert the remaining portion */
+    /*
+     * 루프 종료 후 새로 추가하는 영역의 끝부분 상부가 남아 있다면 남아 있는 부분만 추가
+     */
 	if (base < end) {
 		nr_new++;
 		if (insert)
@@ -677,6 +736,12 @@ repeat:
 	 * If this was the first round, resize array and repeat for actual
 	 * insertions; otherwise, merge and return.
 	 */
+    /*
+     * first round에서 기존 memblock들과 끼워 넣을 memblock들의 합(type->cnt + nr_new)이
+     * 최대 관리 개수(type->max)를 넘어가면 memblock_double_array()를 호출하여
+     * 엔트리의 수를 두 배 크게 한다.
+     * 충분한 엔트리 개수가 준비 될 때까지 반복한다.
+     */
 	if (!insert) {
 		while (type->cnt + nr_new > type->max)
 			if (memblock_double_array(type, obase, size) < 0)
@@ -684,6 +749,11 @@ repeat:
 		insert = true;
 		goto repeat;
 	} else {
+        /*
+         * second round에서 끼워 넣은 memblock들에 대해
+         * 주변 memblock들과 인접하고 flag 타입이 동일한 memblock들을 memblock_merge_regions()
+         * 함수를 사용하여 memge한다.
+         */
 		memblock_merge_regions(type);
 		return 0;
 	}
@@ -717,6 +787,10 @@ int __init_memblock memblock_add_node(phys_addr_t base, phys_addr_t size,
  *
  * Return:
  * 0 on success, -errno on failure.
+ */
+/*
+ * memblock_add() : 메모리 영역을 memory memblock에 추가한다
+ * - 물리 메모리 시작 주소 @base 부터 @size 만큼 memory memblock에 추가한다.
  */
 int __init_memblock memblock_add(phys_addr_t base, phys_addr_t size)
 {

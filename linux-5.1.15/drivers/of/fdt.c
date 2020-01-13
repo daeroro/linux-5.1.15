@@ -1141,11 +1141,11 @@ static void __init early_init_dt_check_for_initrd(unsigned long node)
 	
 	/*
 		"linux,initrd_start" 속성 값을 읽어 옴
-	*/
-	prop = of_get_flat_dt_prop(node, "linux,initrd-start", &len);
-	if (!prop)
-		return;
-	start = of_read_number(prop, len/4);
+        */
+    prop = of_get_flat_dt_prop(node, "linux,initrd-start", &len);
+    if (!prop)
+        return;
+    start = of_read_number(prop, len/4);
 
 	/*
 		"linux,initrd_end" 속성 값을 읽어 옴
@@ -1445,6 +1445,11 @@ void __init __weak early_init_dt_add_memory_arch(u64 base, u64 size)
 
 	/*
 		사이즈가 너무 작으면 경고 메세지를 출력하고 함수를 빠져나간다.
+        ~PAGE_MASK = PAGE_SIZE - 1
+        base & ~PAGE_MASK = base에서 PAGE_SIZE의 offset
+        PAGE_SIZE - (base & ~PAGE_MASK) -> 0 ~ PAGE_SIZE -1 까지
+
+        => size가 한 페이지를 넘지 못하는 경우는 return
 	*/
 	if (size < PAGE_SIZE - (base & ~PAGE_MASK)) {
 		pr_warn("Ignoring memory block 0x%llx - 0x%llx\n",
@@ -1455,6 +1460,8 @@ void __init __weak early_init_dt_add_memory_arch(u64 base, u64 size)
 	/*
 		시작 주소가 페이지 단위로 정렬되지 않았드면 시작 주소를 페이지 단위로 정렬하고
 		그 차이만큼 size를 줄인다. 그런 후 페이지 단위로 내림 정렬한다.
+
+        PAGE_ALIGN(base) : base를 PAGE_SIZE 단위로 round up
 	*/
 	if (!PAGE_ALIGNED(base)) {
 		size -= PAGE_SIZE - (base & ~PAGE_MASK);
