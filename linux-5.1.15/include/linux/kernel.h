@@ -77,13 +77,7 @@
  * Rounds @x down to next multiple of @y (which must be a power of 2).
  * To perform arbitrary rounding down, use rounddown() below.
  */
-/*
-	x = dt_phys
-	y = SWAPPER_BLOCK_SIZE = 1<<21
-
-	
-*/
-		#define round_down(x, y) ((x) & ~__round_mask(x, y))
+#define round_down(x, y) ((x) & ~__round_mask(x, y))
 
 /**
  * FIELD_SIZEOF - get the size of a struct's field

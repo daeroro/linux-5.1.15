@@ -125,6 +125,9 @@ static inline void cpu_uninstall_idmap(void)
 {
 	struct mm_struct *mm = current->active_mm;
 
+	/*
+		zero page를 ttbr0_el1에 설정함
+	*/
 	cpu_set_reserved_ttbr0();
 	local_flush_tlb_all();
 	cpu_set_default_tcr_t0sz();

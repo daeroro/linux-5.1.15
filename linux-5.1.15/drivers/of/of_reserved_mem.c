@@ -26,14 +26,32 @@
 static struct reserved_mem reserved_mem[MAX_RESERVED_REGIONS];
 static int reserved_mem_count;
 
+/*
+   early_init_dt_alloc_reserved_memory_arch()
+
+   : 인자로 들어온 size, align, start, end를 이용하여 저장할 메모리 공간을 찾고
+     시작주소를 res_base에 갱신하여 반환한다.
+
+	 - nomap = 1 -> memblock_remove()
+	   nomap = 0 -> memblock_reserve()
+*/
 static int __init early_init_dt_alloc_reserved_memory_arch(phys_addr_t size,
 	phys_addr_t align, phys_addr_t start, phys_addr_t end, bool nomap,
 	phys_addr_t *res_base)
 {
 	phys_addr_t base;
 
+	/*
+	   	인자로 들어온 end, align을 확인하여 값이 없으면 갱신
+
+	   	MEMBLOCK_ALLOC_ANYWHERE = (~(phys_addr_t)0)
+		SMP_CACHE_BYTES = 1 << 6
+	*/
 	end = !end ? MEMBLOCK_ALLOC_ANYWHERE : end;
 	align = !align ? SMP_CACHE_BYTES : align;
+	/*
+	  	메모리를 저장할 base 주소를 찾는다.
+	*/
 	base = memblock_find_in_range(start, end, size, align);
 	if (!base)
 		return -ENOMEM;
@@ -48,6 +66,12 @@ static int __init early_init_dt_alloc_reserved_memory_arch(phys_addr_t size,
 /**
  * res_mem_save_node() - save fdt node for second pass initialization
  */
+/*
+   fdt_reserved_mem_save_node()
+   
+   : 전역 변수로 선언된 reserved_mem[] 배열에
+   struct reserved_mem 구조체에 맞춰 reserved-memory를 저장한다.
+*/
 void __init fdt_reserved_mem_save_node(unsigned long node, const char *uname,
 				      phys_addr_t base, phys_addr_t size)
 {
@@ -71,6 +95,11 @@ void __init fdt_reserved_mem_save_node(unsigned long node, const char *uname,
  * res_mem_alloc_size() - allocate reserved memory described by 'size', 'align'
  *			  and 'alloc-ranges' properties
  */
+/*
+   __reserved_mem_allock_size() :
+
+	
+*/
 static int __init __reserved_mem_alloc_size(unsigned long node,
 	const char *uname, phys_addr_t *res_base, phys_addr_t *res_size)
 {
@@ -82,29 +111,57 @@ static int __init __reserved_mem_alloc_size(unsigned long node,
 	int nomap;
 	int ret;
 
+	// "size" 속성 찾기
 	prop = of_get_flat_dt_prop(node, "size", &len);
 	if (!prop)
 		return -EINVAL;
 
+	/*	
+		찾은 "size" 속성에서 len이 설정값과 일치 하는지 검사
+	*/
 	if (len != dt_root_size_cells * sizeof(__be32)) {
 		pr_err("invalid size property in '%s' node.\n", uname);
 		return -EINVAL;
 	}
+
+	// "size" 속성 값을 읽어 size에 저장
 	size = dt_mem_next_cell(dt_root_size_cells, &prop);
 
+	/*
+		"no-map" 속성 값을 찾는다
+		- 속성이 있으면 non_NULL != NULL (O) -> nomap = 1
+		- 속성이 없으면 NULL != NULL (X) -> nomap = 0
+	*/
 	nomap = of_get_flat_dt_prop(node, "no-map", NULL) != NULL;
 
+	/*
+	  	"alignment" 속성을 찾는다. 
+	*/
 	prop = of_get_flat_dt_prop(node, "alignment", &len);
 	if (prop) {
+		// 속성이 있지만 len이 설정한 값과 일치하지 않는 경우 에러
 		if (len != dt_root_addr_cells * sizeof(__be32)) {
 			pr_err("invalid alignment property in '%s' node.\n",
 				uname);
 			return -EINVAL;
 		}
+		// "alignment" 속성 값을 읽어서 align에 저장
 		align = dt_mem_next_cell(dt_root_addr_cells, &prop);
 	}
 
 	/* Need adjust the alignment to satisfy the CMA requirement */
+	/*
+		CMA(Contiguous Memory Access)
+		- CONFIG_CMA가 1이고
+		- node에 "shared-dma-pool"라는 compatible 속성이 있고
+		- node에 "reusable" 속성이 있고
+		- node에 "no-map" 속성이 없으면
+
+		=> order를 구해서, align을 갱신
+
+		MAX_ORDER = 11
+		pageblock_order = 9
+	*/
 	if (IS_ENABLED(CONFIG_CMA)
 	    && of_flat_dt_is_compatible(node, "shared-dma-pool")
 	    && of_get_flat_dt_prop(node, "reusable", NULL)
@@ -115,21 +172,28 @@ static int __init __reserved_mem_alloc_size(unsigned long node,
 		align = max(align, (phys_addr_t)PAGE_SIZE << order);
 	}
 
+	// 노드에서 "alloc-ranges" 속성을 찾음
 	prop = of_get_flat_dt_prop(node, "alloc-ranges", &len);
-	if (prop) {
+	if (prop) { // 속성을 찾았을 때, 
 
+		// len이 설정한 크기 값과 다를 때 -> 에러
 		if (len % t_len != 0) {
 			pr_err("invalid alloc-ranges property in '%s', skipping node.\n",
 			       uname);
 			return -EINVAL;
 		}
 
+		// base 초기화
 		base = 0;
 
 		while (len > 0) {
+			/*
+			   prop에서 address-cells, size-cells을 읽어 start, end에 저장
+			*/
 			start = dt_mem_next_cell(dt_root_addr_cells, &prop);
 			end = start + dt_mem_next_cell(dt_root_size_cells,
 						       &prop);
+
 
 			ret = early_init_dt_alloc_reserved_memory_arch(size,
 					align, start, end, nomap, &base);
@@ -142,7 +206,9 @@ static int __init __reserved_mem_alloc_size(unsigned long node,
 			len -= t_len;
 		}
 
-	} else {
+	} else { // 찾지 못했을 때,
+
+		// start, end 값을 0으로 두고 비어 있는 메모리를 찾는다.
 		ret = early_init_dt_alloc_reserved_memory_arch(size, align,
 							0, 0, nomap, &base);
 		if (ret == 0)
@@ -150,11 +216,13 @@ static int __init __reserved_mem_alloc_size(unsigned long node,
 				uname, &base, (unsigned long)size / SZ_1M);
 	}
 
+	// 저장할 base 주소를 찾지 못한 경우
 	if (base == 0) {
 		pr_info("failed to allocate memory for node '%s'\n", uname);
 		return -ENOMEM;
 	}
 
+	// memblock에 저장한 base, size를 res_base, res_size에 갱신
 	*res_base = base;
 	*res_size = size;
 
@@ -201,6 +269,7 @@ static int __init __rmem_cmp(const void *a, const void *b)
 	return 0;
 }
 
+//
 static void __init __rmem_check_for_overlap(void)
 {
 	int i;
@@ -237,8 +306,12 @@ void __init fdt_init_reserved_mem(void)
 	int i;
 
 	/* check for overlapping reserved regions */
+	// reserved regions이 겹치는 지 검사한다.
 	__rmem_check_for_overlap();
 
+	/*
+	   모든 reserved_mem[] 배열을 돌면서 메모리를 할당한다.
+	*/
 	for (i = 0; i < reserved_mem_count; i++) {
 		struct reserved_mem *rmem = &reserved_mem[i];
 		unsigned long node = rmem->fdt_node;
@@ -246,15 +319,25 @@ void __init fdt_init_reserved_mem(void)
 		const __be32 *prop;
 		int err = 0;
 
+		/*
+		   현재 node에서 "phandle"이나 "linux,phandle" 속성을 찾아서 rmem->phandle에 저장
+		*/
 		prop = of_get_flat_dt_prop(node, "phandle", &len);
 		if (!prop)
 			prop = of_get_flat_dt_prop(node, "linux,phandle", &len);
 		if (prop)
 			rmem->phandle = of_read_number(prop, len/4);
-
+	
+		/*
+			size가 0이면,
+			현재 node에서 rmem->name으로 메모리를 할당한다.
+		*/
 		if (rmem->size == 0)
 			err = __reserved_mem_alloc_size(node, rmem->name,
 						 &rmem->base, &rmem->size);
+		/*
+		   	정상적으로 rmem을 메모리에 할당하였을 때,
+		*/
 		if (err == 0)
 			__reserved_mem_init_node(rmem);
 	}

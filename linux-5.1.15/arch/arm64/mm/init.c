@@ -280,17 +280,51 @@ early_param("mem", early_mem);
 static int __init early_init_dt_scan_usablemem(unsigned long node,
 		const char *uname, int depth, void *data)
 {
+	/*
+	struct memblock_region {
+		phys_addr_t base;
+		phys_addr_t size;
+		enum memblock_flags flags;
+	#ifdef CONFIG_HAVE_MEMBLOCK_NODE_MAP
+		int nid;
+	#endif
+	*/
 	struct memblock_region *usablemem = data;
 	const __be32 *reg;
 	int len;
 
+	/*
+		depth가 1이 아니거나,
+		uname이 "chosen"이 아닌 경우 return 0;
+	*/
 	if (depth != 1 || strcmp(uname, "chosen") != 0)
 		return 0;
 
+	/*
+		"chosen" 노드에서 "linux,usable-memory-range"의 이름을 가지는 property찾음
+		
+		- 반환 값 reg : data 저장
+		- len : len 저장
+	struct fdt_property {
+		fdt32_t tag;
+		fdt32_t len;
+		fdt32_t nameoff;
+		char data[0];
+	};
+	*/
 	reg = of_get_flat_dt_prop(node, "linux,usable-memory-range", &len);
+	/*
+		reg가 NULL 이거나 -> node에서 "linux,usable-memory-range"에 해당하는 property를 찾지 x
+		len이 ( + ) 보다 작음 경우 return 1
+	*/
 	if (!reg || (len < (dt_root_addr_cells + dt_root_size_cells)))
 		return 1;
 
+	/*
+		memblock_region의 base, size를 저장
+
+		ex) reg -> 0x9 0xf000_0000 0x0 0x1000_0000
+	*/
 	usablemem->base = dt_mem_next_cell(dt_root_addr_cells, &reg);
 	usablemem->size = dt_mem_next_cell(dt_root_size_cells, &reg);
 
@@ -303,20 +337,48 @@ static void __init fdt_enforce_memory_region(void)
 		.size = 0,
 	};
 
+	/*
+	   flatten dtb에서 모든 노드를 돌면서 early_init_dt_scan_usablemem을 수행한다.
+
+	   - 수행 결과는 reg에 저장한다.
+	*/
 	of_scan_flat_dt(early_init_dt_scan_usablemem, &reg);
 
+	/*
+	   reg.base, reg.size 영역에 해당되지 않는 모든 region[]을 제거
+	*/
 	if (reg.size)
 		memblock_cap_memory_range(reg.base, reg.size);
 }
 
 void __init arm64_memblock_init(void)
 {
+	/*
+		linear_region_size에 64비트 커널에서 사용할 가상 주소 크기의 절반을 담음
+
+		ex) VA_BITS = 48일 경우
+		#define PAGE_OFFSET		(UL(0xffffffffffffffff) - (UL(1) << (VA_BITS - 1)) + 1)
+								= 0xffff_ffff_ffff_ffff - 0x0000_8000_0000_0000 + 1
+								= 0xffff_8000_0000_0000
+
+		-> PAGE_OFFSET의 음수표현 : 2의 보수
+		   -PAGE_OFFSET = 0x0000_8000_0000_0000 => 128TB를 나타냄
+	*/
 	const s64 linear_region_size = -(s64)PAGE_OFFSET;
 
 	/* Handle linux,usable-memory-range property */
+	/*
+	   디바이스 트리(FDT)가 지정한 사용 메모리 영역이 제한된 경우
+	   그 영역 이외의 memblock영역을 제거한다.
+	   - chosen 노드에 "linux,usable-memory-range" 속성으로 사용할 수 있는 메모리 영역 제한 가능
+	*/
 	fdt_enforce_memory_region();
 
 	/* Remove memory above our supported physical address size */
+	/*
+	   PHYS_MASK_SHIFT = 48
+	   시스템 물리 메모리 영역을 초과하는 영역은 모두 제거한다.
+	*/
 	memblock_remove(1ULL << PHYS_MASK_SHIFT, ULLONG_MAX);
 
 	/*
@@ -329,6 +391,12 @@ void __init arm64_memblock_init(void)
 	/*
 	 * Select a suitable value for the base of physical memory.
 	 */
+	/*
+		물리 메모리의 시작 주소는 커널 설정에 따라 섹션 크기 또는 pud 크기로 정렬하여 사용
+
+		#define round_down(x, y) ((x) & ~__round_mask(x, y))
+		#define __round_mask(x, y) ((__typeof__(x))((y)-1))
+	*/
 	memstart_addr = round_down(memblock_start_of_DRAM(),
 				   ARM64_MEMSTART_ALIGN);
 
@@ -337,8 +405,18 @@ void __init arm64_memblock_init(void)
 	 * linear mapping. Take care not to clip the kernel which may be
 	 * high in memory.
 	 */
+	/*
+		커널 리니어 매핑 사이즈를 초과하는 물리 메모리의 끝을 memory memblock 영역에서 제거
+		- 커널이 메모리의 끝 부분에 로드된 경우가 있으므로 이러한 경우 끝 부분을 기준으로 
+		로드된 커널이 제거되지 않도록 제한.
+	*/
 	memblock_remove(max_t(u64, memstart_addr + linear_region_size,
 			__pa_symbol(_end)), ULLONG_MAX);
+	/*
+	   로드된 커널이 커널 리니어 매핑 사이즈보다 큰 메모리의 상위쪽에 로드된 경우
+	   메모리의 상위에 위치한 커널을 보호하기 위해 커널 리니어 매핑 사이즈를 초과한 
+	   메모리의 아랫 부분을 제거한다.
+	*/
 	if (memstart_addr + linear_region_size < memblock_end_of_DRAM()) {
 		/* ensure that memstart_addr remains sufficiently aligned */
 		memstart_addr = round_up(memblock_end_of_DRAM() - linear_region_size,
@@ -351,16 +429,30 @@ void __init arm64_memblock_init(void)
 	 * high up in memory, add back the kernel region that must be accessible
 	 * via the linear mapping.
 	 */
+	/*
+		DRAM 메모리 제한을 설정한 경우 제한 메모리 범위를 초과한 DRAM 메모리 영역을 
+		memory memblock 영역에서 제거한다.
+
+		- DRAM 메모리 제한은 early_mem()을 통해 가능
+	*/
 	if (memory_limit != PHYS_ADDR_MAX) {
 		memblock_mem_limit_remove_map(memory_limit);
 		memblock_add(__pa_symbol(_text), (u64)(_end - _text));
 	}
 
+	/*
+	   램디스크 영역(initrd) 영역을 reserved memblock에 추가한다.
+	*/
 	if (IS_ENABLED(CONFIG_BLK_DEV_INITRD) && phys_initrd_size) {
 		/*
 		 * Add back the memory we just removed if it results in the
 		 * initrd to become inaccessible via the linear mapping.
 		 * Otherwise, this is a no-op
+		 */
+		/*
+		   PAGE_MASK = (~(PAGE_SIZE-1))
+
+		   phys_initrd_start, phys_initrd_size를 페이지 사이즈로 정렬한다
 		 */
 		u64 base = phys_initrd_start & PAGE_MASK;
 		u64 size = PAGE_ALIGN(phys_initrd_start + phys_initrd_size) - base;
@@ -373,11 +465,18 @@ void __init arm64_memblock_init(void)
 		 * each other) so that all granule/#levels combinations can
 		 * always access both.
 		 */
+		/*
+		   램디스크의 시작과 끝이 DRAM의 memblock의 시작과 끝 영역에 포함되지 않을 때는 추가x
+		*/
 		if (WARN(base < memblock_start_of_DRAM() ||
 			 base + size > memblock_start_of_DRAM() +
 				       linear_region_size,
 			"initrd not fully accessible via the linear mapping -- please check your bootloader ...\n")) {
 			initrd_start = 0;
+		/*
+		   DRAM의 memblock의 시작과 끝 영역에 포함될 때는
+		   - 그 영역을 remove, add, reserve 시켜줌
+		*/
 		} else {
 			memblock_remove(base, size); /* clear MEMBLOCK_ flags */
 			memblock_add(base, size);
@@ -385,6 +484,10 @@ void __init arm64_memblock_init(void)
 		}
 	}
 
+	/*
+	   보안 목적으로 CONFIG_RANDOMIZE_BASE 커널 옵션을 사용하여
+	   커널 시작 주소가 랜덤하게 바뀌는 경우 memstart_addr을 구한다.
+	*/
 	if (IS_ENABLED(CONFIG_RANDOMIZE_BASE)) {
 		extern u16 memstart_offset_seed;
 		u64 range = linear_region_size -
@@ -406,27 +509,60 @@ void __init arm64_memblock_init(void)
 	 * Register the kernel text, kernel data, initrd, and initial
 	 * pagetables with memblock.
 	 */
+	/*
+	   커널 영역을 reserve 한다.
+	*/
 	memblock_reserve(__pa_symbol(_text), _end - _text);
+	/*
+	   램디스크(initrd) 영역 주소를 가상 주소로 변환하여 저장한다.
+	*/
 	if (IS_ENABLED(CONFIG_BLK_DEV_INITRD) && phys_initrd_size) {
 		/* the generic initrd code expects virtual addresses */
 		initrd_start = __phys_to_virt(phys_initrd_start);
 		initrd_end = initrd_start + phys_initrd_size;
 	}
 
+	/*
+		DTB에 관련된 세 가지 영역을 추가한다
+		- DTB 자신의 영역
+		- DTB 헤더의 off_mem_rsvmap 필드가 가리키는 memory reserve 블록(바이너리)에서 
+		  읽은 메모리 영역들
+		- DTB reserved-mem 노드 영역이 요청하는 영역들
+	*/
 	early_init_fdt_scan_reserved_mem();
 
 	/* 4GB maximum for 32-bit only capable devices */
+	/*
+	   디바이스 드라이버(dma for coherent/cma for dma)가 필요로 하는 DMA 영역을 구한다.
+	*/
 	if (IS_ENABLED(CONFIG_ZONE_DMA32))
 		arm64_dma_phys_limit = max_zone_dma_phys();
 	else
 		arm64_dma_phys_limit = PHYS_MASK + 1;
 
+	/*
+		crash 커널 영역을 reserve 한다.
+	*/
 	reserve_crashkernel();
 
+	/*
+	   	elf core 헤더 영역을 reserve 한다.
+	*/
 	reserve_elfcorehdr();
 
+	/*
+	   	ARM64의 경우 highmem을 사용하지 않는다.
+		- 따라서 메모리의 끝 주소를 대입한다.
+	*/
 	high_memory = __va(memblock_end_of_DRAM() - 1) + 1;
 
+	/*
+	   	dma 영역을 reserved memblock에 추가하고 CMA(Contiguous Memory Allocator)에도 추가한다.
+		- 전역 cma_areas[] 배열에 추가한 엔트리는 CMA 드라이버가 로드되면서 초기화할 때 사용
+		- 또한 전역 dma_mmu_remap[] 배열에 추가된 엔트리는 추후
+		  dma_contiguous_remap() 함수를 통해 지정된 영역에 대응하는 페이지 테이블 엔트리들을
+		  IO 속성으로 매핑할 때 사용한다.
+	*/
 	dma_contiguous_reserve(arm64_dma_phys_limit);
 }
 

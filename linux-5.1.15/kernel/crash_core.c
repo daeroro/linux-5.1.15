@@ -121,20 +121,38 @@ static int __init parse_crashkernel_mem(char *cmdline,
  *
  * It returns 0 on success and -EINVAL on failure.
  */
+/*
+	parse_crashkernel_simple()
+
+	: cmdline에 "size[@offset]" 형태인 경우
+	  이를 파싱하여 size 부분을 crash_size에 담고
+	  offset 부분을 crash_base에 담는다.
+*/
 static int __init parse_crashkernel_simple(char *cmdline,
 					   unsigned long long *crash_size,
 					   unsigned long long *crash_base)
 {
 	char *cur = cmdline;
 
+	/*
+	   	cmdline에서 size를 파싱하여 crash_size에 담고
+		cur에는 파싱한 문자열의 끝+1의 위치를 담는다.
+	*/
 	*crash_size = memparse(cmdline, &cur);
 	if (cmdline == cur) {
 		pr_warn("crashkernel: memory value expected\n");
 		return -EINVAL;
 	}
 
+	/*
+	   	다음 문자가 '@'인 경우 crash_base에 '@' 문자 다음을 파싱하여 가져온다.
+	*/
 	if (*cur == '@')
 		*crash_base = memparse(cur+1, &cur);
+	/*
+		다음 문자가 space 문자 또는 null이 아닌 다른 문자인 경우
+		경고 메세지를 출력하고 에러로 리턴한다.
+	*/
 	else if (*cur != ' ' && *cur != '\0') {
 		pr_warn("crashkernel: unrecognized char: %c\n", *cur);
 		return -EINVAL;
@@ -159,12 +177,25 @@ static __initdata char *suffix_tbl[] = {
  *
  * It returns 0 on success and -EINVAL on failure.
  */
+/*
+	parse_crashkernel_suffix()
+
+	: suffix 문자열로 끝나는 cmdline 문자열을 파싱하여 crashsize를 리턴한다.
+*/
 static int __init parse_crashkernel_suffix(char *cmdline,
 					   unsigned long long	*crash_size,
 					   const char *suffix)
 {
 	char *cur = cmdline;
 
+	/*
+		사이즈를 알아오고 cur에는 파싱 문자열의 끝+1 의 위치를 담는다.
+
+		ex) cmdlne="64K,high"
+
+		-> crash_size = 65536
+		   cur=",high"
+	*/
 	*crash_size = memparse(cmdline, &cur);
 	if (cmdline == cur) {
 		pr_warn("crashkernel: memory value expected\n");
@@ -172,11 +203,21 @@ static int __init parse_crashkernel_suffix(char *cmdline,
 	}
 
 	/* check with suffix */
+	/*
+	   	cur 문자열에서 인수로 지정한 suffix 문자열과 다르면
+		경고 메세지 출력하고 에러로 리턴한다.
+	*/
 	if (strncmp(cur, suffix, strlen(suffix))) {
 		pr_warn("crashkernel: unrecognized char: %c\n", *cur);
 		return -EINVAL;
 	}
+
+	// cur이 suffix 다음 문자를 가리키도록 함
 	cur += strlen(suffix);
+	/*
+		suffix 문자열 다음 문자가 space 또는 null 문자가 아닌 경우
+		경고 메세지를 출력하고 에러로 리턴한다.
+	*/
 	if (*cur != ' ' && *cur != '\0') {
 		pr_warn("crashkernel: unrecognized char: %c\n", *cur);
 		return -EINVAL;
@@ -192,31 +233,52 @@ static __init char *get_last_crashkernel(char *cmdline,
 	char *p = cmdline, *ck_cmdline = NULL;
 
 	/* find crashkernel and use the last one if there are more */
+	/*
+		cmdline으로 받은 문자열 중 name("crashkernel=") 문자열이 있는지 찾아본다.
+	*/
 	p = strstr(p, name);
+	/*
+	   	문자열이 검색된 경우 그 위치부터 space 문자열 또는 문자열의 끝가지 루프를 돈다.
+	*/
 	while (p) {
 		char *end_p = strchr(p, ' ');
 		char *q;
 
+		// end_p에는 "crashkernel="의 끝을 저장한다.
 		if (!end_p)
 			end_p = p + strlen(p);
 
+		/*
+			suffix 인수가 지정되지 않은 경우 suffix_tbl[] 배열 수 만큼 루프를 돈다.
+		*/
 		if (!suffix) {
 			int i;
 
 			/* skip the one with any known suffix */
 			for (i = 0; suffix_tbl[i]; i++) {
+				//q에는 "crashkernel=~~"에서 suffix의 위치를 저장
 				q = end_p - strlen(suffix_tbl[i]);
+				// suffix_tbl[]과 q를 비교하여 일치하면 next로
+				// suffix 인수가 지정되지 않은 "crashkernel=~~"을 찾기 위함
 				if (!strncmp(q, suffix_tbl[i],
 					     strlen(suffix_tbl[i])))
 					goto next;
 			}
 			ck_cmdline = p;
 		} else {
+			/*
+				인수가 지정된 경우, 인수로 지정한 suffix 문자열이 발견되는 경우
+				일단 ck_cmdline에 발견된 위치를 기억한다.
+			*/
 			q = end_p - strlen(suffix);
 			if (!strncmp(q, suffix, strlen(suffix)))
 				ck_cmdline = p;
 		}
 next:
+		/*
+		   	발견된 위치 +1에서 다시 name 문자열을 찾아보고 발견되지 않으면
+			루프 조건에 의해 루프를 빠져나온다.
+		*/
 		p = strstr(p+1, name);
 	}
 
@@ -226,6 +288,16 @@ next:
 	return ck_cmdline;
 }
 
+/*
+	__parse_crashkernel() : crash_size와 crash_base 값을 알아오는데
+							3가지 문법 형태에 따라 호출함수를 달리한다.
+	1) suffix가 주어진 경우
+	   - "64M,high"
+	2) ':'문자로 구분된 range가 주어진 경우
+	   - "xxx-yyy:64M@0"
+	3) 단순히 사이즈(및 시작 주소)가 주어진 경우
+	   - "64M@0"
+*/
 static int __init __parse_crashkernel(char *cmdline,
 			     unsigned long long system_ram,
 			     unsigned long long *crash_size,
@@ -240,13 +312,30 @@ static int __init __parse_crashkernel(char *cmdline,
 	*crash_size = 0;
 	*crash_base = 0;
 
+	/*
+	   cmdline에서 name으로 검색된 마지막 위치에서 suffix가 일치하는 문자열을 알아온다.
+	   
+	   ex) cmdline="console=ttyS0 crashkernel=128M@0"
+	   
+	   -  name="crashkernel="
+	      suffix=null
+	   -> ck_cmdline="crashkernel=128M@0"
+	*/
 	ck_cmdline = get_last_crashkernel(cmdline, name, suffix);
 
 	if (!ck_cmdline)
 		return -EINVAL;
 
+	/*
+		ck_cmdline이 "crashkernel=" 문자열 다음을 가리키게 한다.
+	*/
 	ck_cmdline += strlen(name);
 
+	/*
+		1) suffix가 주어진 경우,
+		   - suffix 문자열로 끝나는 cmdline 문자열을 파싱하여
+		     crashsize를 리턴한다.
+	*/
 	if (suffix)
 		return parse_crashkernel_suffix(ck_cmdline, crash_size,
 				suffix);
@@ -254,12 +343,28 @@ static int __init __parse_crashkernel(char *cmdline,
 	 * if the commandline contains a ':', then that's the extended
 	 * syntax -- if not, it must be the classic syntax
 	 */
+	/*
+	    2) 
+	    first_colon : 처음 발견되는 ":" 문자열을 찾아본다.
+		first_space : 처음 발견되는 space 문자열을 찾아본다.
+	*/
 	first_colon = strchr(ck_cmdline, ':');
 	first_space = strchr(ck_cmdline, ' ');
+	/*
+	   	":"문자열이 space 문자열 이전에 있는 경우
+		cmdline="ramsize-range:size[,...][@offset]"형태로 문자열이 전달되게 되는데
+		','로 구분한 마지막 range에서 size를 파싱하여 출력 인수 crash_size에 담고,
+		@offset를 파싱하여 crash_base에 담은 후 성공리에 0을 리턴한다.
+		만일 range가 system_ram을 초과하는 경우에는 에러를 리턴한다.
+	*/
 	if (first_colon && (!first_space || first_colon < first_space))
 		return parse_crashkernel_mem(ck_cmdline, system_ram,
 				crash_size, crash_base);
 
+	/*
+		3) 단순하게 cmdline="size[@offset]" 형태로 문자열이 전달되는 경우
+		size를 파싱하여 crash_size에 담고, @offset를 파싱하여 crash_base에 담는다.
+	*/
 	return parse_crashkernel_simple(ck_cmdline, crash_size, crash_base);
 }
 
@@ -267,6 +372,9 @@ static int __init __parse_crashkernel(char *cmdline,
  * That function is the entry point for command line parsing and should be
  * called from the arch-specific code.
  */
+/*
+	parse_crashkernel() : cmdline 문자열을 파싱하여 crash_base와 crash_size 값을 알아온다.
+*/
 int __init parse_crashkernel(char *cmdline,
 			     unsigned long long system_ram,
 			     unsigned long long *crash_size,

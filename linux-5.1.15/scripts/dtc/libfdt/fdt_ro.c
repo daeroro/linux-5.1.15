@@ -244,7 +244,7 @@ static const struct fdt_reserve_entry *fdt_mem_rsv(const void *fdt, int n)
 	if (absoffset > fdt_totalsize(fdt) - sizeof(struct fdt_reserve_entry))
 		return NULL;
 
-	// fdt의 reserve block에서 n번째의 fdt_reserve_entry 반환
+	// fdt의 reserve block에서 n번째의 fdt_reserve_entry 구조체 포인터 반환
 	return fdt_mem_rsv_(fdt, n);
 }
 

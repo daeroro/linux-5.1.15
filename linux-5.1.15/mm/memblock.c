@@ -296,6 +296,7 @@ __memblock_find_range_top_down(phys_addr_t start, phys_addr_t end,
  * Return:
  * Found address on success, 0 on failure.
  */
+//
 static phys_addr_t __init_memblock memblock_find_in_range_node(phys_addr_t size,
 					phys_addr_t align, phys_addr_t start,
 					phys_addr_t end, int nid,
@@ -311,6 +312,9 @@ static phys_addr_t __init_memblock memblock_find_in_range_node(phys_addr_t size,
 	/* avoid allocating the first page */
 	start = max_t(phys_addr_t, start, PAGE_SIZE);
 	end = max(start, end);
+    /*
+     * kernel_end : kernel image end
+     */
 	kernel_end = __pa_symbol(_end);
 
 	/*
@@ -360,6 +364,7 @@ static phys_addr_t __init_memblock memblock_find_in_range_node(phys_addr_t size,
  * Return:
  * Found address on success, 0 on failure.
  */
+//
 phys_addr_t __init_memblock memblock_find_in_range(phys_addr_t start,
 					phys_addr_t end, phys_addr_t size,
 					phys_addr_t align)
@@ -368,9 +373,16 @@ phys_addr_t __init_memblock memblock_find_in_range(phys_addr_t start,
 	enum memblock_flags flags = choose_memblock_flags();
 
 again:
+	/*
+		인자로 들어온 start, end, size, align을 가지고
+		가능한 base 주소를 구해서 ret에 저장
+	*/
 	ret = memblock_find_in_range_node(size, align, start, end,
 					    NUMA_NO_NODE, flags);
 
+	/*
+	  	mirrored memory에서 찾지 못한 경우 flags 속성을 변경 후 다시 찾음
+	*/
 	if (!ret && (flags & MEMBLOCK_MIRROR)) {
 		pr_warn("Could not allocate %pap bytes of mirrored memory\n",
 			&size);
@@ -822,6 +834,9 @@ static int __init_memblock memblock_isolate_range(struct memblock_type *type,
 					phys_addr_t base, phys_addr_t size,
 					int *start_rgn, int *end_rgn)
 {
+	/*
+	   overflow가 발생하지 않게 size를 조절해 메모리의 end 주소를 구한다
+	*/
 	phys_addr_t end = base + memblock_cap_size(base, &size);
 	int idx;
 	struct memblock_region *rgn;
@@ -832,19 +847,40 @@ static int __init_memblock memblock_isolate_range(struct memblock_type *type,
 		return 0;
 
 	/* we'll create at most two more regions */
+	/*
+	   많아봐야 2개의 region을 만듦으로 
+	   type->max가 현재 type->cnt + 2 보다 작을 경우 array 크기를 늘려준다.
+	*/
 	while (type->cnt + 2 > type->max)
 		if (memblock_double_array(type, base, size) < 0)
 			return -ENOMEM;
 
+	/*
+		현재 저장되어 있는 type의 메모리(memory or reserved)를 모두 순환한다.
+	*/
 	for_each_memblock_type(idx, type, rgn) {
 		phys_addr_t rbase = rgn->base;
 		phys_addr_t rend = rbase + rgn->size;
 
+		/*
+		1) base---end	rbase---rend -> break
+		*/
 		if (rbase >= end)
 			break;
+		/*
+		2) rbase----rend base----end -> continue
+		*/
 		if (rend <= base)
 			continue;
 
+		/*
+		3) rbase--------rend
+		         base--end
+			or
+
+		   rbase--------rend
+		         base---------end
+		*/
 		if (rbase < base) {
 			/*
 			 * @rgn intersects from below.  Split and continue
@@ -856,6 +892,12 @@ static int __init_memblock memblock_isolate_range(struct memblock_type *type,
 			memblock_insert_region(type, idx, rbase, base - rbase,
 					       memblock_get_region_node(rgn),
 					       rgn->flags);
+
+		/*
+		4)
+			      rbase----------rend
+		   base---------end
+		*/
 		} else if (rend > end) {
 			/*
 			 * @rgn intersects from above.  Split and redo the
@@ -1665,6 +1707,7 @@ phys_addr_t __init_memblock memblock_end_of_DRAM(void)
 
 static phys_addr_t __init_memblock __find_max_addr(phys_addr_t limit)
 {
+	// max_addr은 물리 주소가 가질 수 있는 max로 설정
 	phys_addr_t max_addr = PHYS_ADDR_MAX;
 	struct memblock_region *r;
 
@@ -1673,7 +1716,11 @@ static phys_addr_t __init_memblock __find_max_addr(phys_addr_t limit)
 	 * the memory memblock regions, if the @limit exceeds the total size
 	 * of those regions, max_addr will keep original value PHYS_ADDR_MAX
 	 */
-	for_each_memblock(memory, r) {
+	/*
+	   모든 memory.regins[]을 순회
+
+	*/
+	for_each_memblock(memory, r) { 
 		if (limit <= r->size) {
 			max_addr = r->base + limit;
 			break;
@@ -1709,15 +1756,24 @@ void __init memblock_cap_memory_range(phys_addr_t base, phys_addr_t size)
 	int start_rgn, end_rgn;
 	int i, ret;
 
+	/*
+	   인자로 들어온 size가 0이면 return
+	*/
 	if (!size)
 		return;
 
+	/*
+	   memblock.memory 영역에서 base, size에 해당하는 영역을 분리
+	*/
 	ret = memblock_isolate_range(&memblock.memory, base, size,
 						&start_rgn, &end_rgn);
 	if (ret)
 		return;
 
 	/* remove all the MAP regions */
+	/*
+	   memblock.memory 영역에서 base, size영역에 해당하지 않는 모든 regins[]을 제거
+	*/
 	for (i = memblock.memory.cnt - 1; i >= end_rgn; i--)
 		if (!memblock_is_nomap(&memblock.memory.regions[i]))
 			memblock_remove_region(&memblock.memory, i);
@@ -1727,6 +1783,9 @@ void __init memblock_cap_memory_range(phys_addr_t base, phys_addr_t size)
 			memblock_remove_region(&memblock.memory, i);
 
 	/* truncate the reserved regions */
+	/*
+	   memblock.reserved 영역에서 base, size 영역에 해당하지 않는 모든 regins[] 제거 
+	*/
 	memblock_remove_range(&memblock.reserved, 0, base);
 	memblock_remove_range(&memblock.reserved,
 			base + size, PHYS_ADDR_MAX);
@@ -1734,6 +1793,8 @@ void __init memblock_cap_memory_range(phys_addr_t base, phys_addr_t size)
 
 void __init memblock_mem_limit_remove_map(phys_addr_t limit)
 {
+	// 인자로 들어오는 limit는 DRAM의 "크기"
+	
 	phys_addr_t max_addr;
 
 	if (!limit)
@@ -1742,6 +1803,7 @@ void __init memblock_mem_limit_remove_map(phys_addr_t limit)
 	max_addr = __find_max_addr(limit);
 
 	/* @limit exceeds the total size of the memory, do nothing */
+	// limit가 memory 영역의 총 합보다 클때에는 max_addr에 PHYS_ADDR_MAX이 return 됨
 	if (max_addr == PHYS_ADDR_MAX)
 		return;
 

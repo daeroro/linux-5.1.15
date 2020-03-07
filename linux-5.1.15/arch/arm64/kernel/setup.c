@@ -328,6 +328,11 @@ void __init setup_arch(char **cmdline_p)
 	// fdt를 읽어 머신 초기화하기
 	setup_machine_fdt(__fdt_pointer);
 
+	/*
+		 커멘드 라인 파라미터 파싱
+		 - 부트 커멘드 라인 문자열을 파싱하여 해당 파라미터가 early 파라미터인 경우
+		   해당 설정 함수를 호출한다.
+	*/
 	parse_early_param();
 
 	/*
@@ -345,6 +350,7 @@ void __init setup_arch(char **cmdline_p)
 
 	xen_early_init();
 	efi_init();
+
 	arm64_memblock_init();
 
 	paging_init();

@@ -129,6 +129,12 @@ bool of_fdt_is_big_endian(const void *blob, unsigned long node)
 	return false;
 }
 
+/*
+	of_fdt_device_is_available()
+
+	: node에서 "status" 속성을 찾는다
+	- "status" 속성이 없거나, "ok" or "okay" 값을 가지면 true를 반환
+*/
 static bool of_fdt_device_is_available(const void *blob, unsigned long node)
 {
 	const char *status = fdt_getprop(blob, node, "status", NULL);
@@ -744,6 +750,9 @@ static u32 of_fdt_crc32;
 /**
  * res_mem_reserve_reg() - reserve all memory described in 'reg' property
  */
+/*
+	reserved-memory 노드의 자식 노드에서 속성 'reg'를 memory에 reserve한다. 
+*/
 static int __init __reserved_mem_reserve_reg(unsigned long node,
 					     const char *uname)
 {
@@ -753,22 +762,35 @@ static int __init __reserved_mem_reserve_reg(unsigned long node,
 	const __be32 *prop;
 	int nomap, first = 1;
 
+	// 현재 node에서 "reg" 속성 구하기
 	prop = of_get_flat_dt_prop(node, "reg", &len);
 	if (!prop)
 		return -ENOENT;
 
+	// len의 길이 검사
 	if (len && len % t_len != 0) {
 		pr_err("Reserved memory: invalid reg property in '%s', skipping node.\n",
 		       uname);
 		return -EINVAL;
 	}
 
+	/*
+	   reserved-memory 노드의 자식 노드에서 "no-map"에 해당하는 속성이 
+	   있으면 -> nomap = 1
+	   없으면 -> nomap = 0
+	*/
 	nomap = of_get_flat_dt_prop(node, "no-map", NULL) != NULL;
 
+	// "reg" 속성 값 읽어서 base, size에 저장
 	while (len >= t_len) {
 		base = dt_mem_next_cell(dt_root_addr_cells, &prop);
 		size = dt_mem_next_cell(dt_root_size_cells, &prop);
 
+		/*
+		   size가 있고, 
+		   nomap == 1 -> memblock_remove() 수행
+		   nomap == 0 -> memblock_reserve() 수행
+		*/
 		if (size &&
 		    early_init_dt_reserve_memory_arch(base, size, nomap) == 0)
 			pr_debug("Reserved memory: reserved region for node '%s': base %pa, size %ld MiB\n",
@@ -779,6 +801,7 @@ static int __init __reserved_mem_reserve_reg(unsigned long node,
 
 		len -= t_len;
 		if (first) {
+			// 전역 배열 reserved_mem[]에 현재 reserved-memory의 정보 저장
 			fdt_reserved_mem_save_node(node, uname, base, size);
 			first = 0;
 		}
@@ -791,6 +814,13 @@ static int __init __reserved_mem_reserve_reg(unsigned long node,
  * in /reserved-memory matches the values supported by the current implementation,
  * also check if ranges property has been provided
  */
+/*
+	__reserved_mem_check_root() 
+	
+	: "reserved-memory" 노드의 '#size-cells', '#address-cells' 값이
+	  dt_root_size_cells, dt_root_addr_cells와 같은 지 비교,
+	  'ranges' 속성이 존재하는 지 체크
+*/
 static int __init __reserved_mem_check_root(unsigned long node)
 {
 	const __be32 *prop;
@@ -835,10 +865,17 @@ static int __init __fdt_scan_reserved_mem(unsigned long node, const char *uname,
 		return 1;
 	}
 
+	// reserved-memory의 자식 노드일 때만 아래 코드를 실행
+
 	if (!of_fdt_device_is_available(initial_boot_params, node))
 		return 0;
 
+	// reg 속성을 찾아서 메모리에 reserve 함
 	err = __reserved_mem_reserve_reg(node, uname);
+	/*
+	   "reg" 속성이 없거나 속성의 길이가 이상하고 "size" 속성이 있다면
+		전역 배열 reserved_mem[]에 시작 주소와 크기를 0으로 하고 저장시켜 놓는다.
+	*/
 	if (err == -ENOENT && of_get_flat_dt_prop(node, "size", NULL))
 		fdt_reserved_mem_save_node(node, uname, 0, 0);
 
@@ -862,6 +899,10 @@ void __init early_init_fdt_scan_reserved_mem(void)
 		return;
 
 	/* Process header /memreserve/ fields */
+	/*
+	   DTB 헤더의 off_mem_rsvmap 필드가 가리키는 memory reserve 블록(바이너리)에서 
+	   읽은 메모리들을 reserve 한다
+	*/
 	for (n = 0; ; n++) {
 		fdt_get_mem_rsv(initial_boot_params, n, &base, &size);
 		if (!size)
@@ -869,6 +910,9 @@ void __init early_init_fdt_scan_reserved_mem(void)
 		early_init_dt_reserve_memory_arch(base, size, 0);
 	}
 
+	/* 
+		모든 노드를 돌면서 reserved-memory 노드를 메모리에 reserve 한다.
+	*/
 	of_scan_flat_dt(__fdt_scan_reserved_mem, NULL);
 	fdt_init_reserved_mem();
 }

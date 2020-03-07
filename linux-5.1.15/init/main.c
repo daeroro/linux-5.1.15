@@ -469,23 +469,57 @@ static int __init do_early_param(char *param, char *val,
 	return 0;
 }
 
+/*
+	parse_early_options() : do_early_param() 함수 주소를 인수로 parse_args() 함수 호출
+*/
 void __init parse_early_options(char *cmdline)
 {
+	/*
+		parse_args() 함수에서
+
+		- 파라미터 블록, 개수, 범위가 지정되는 경우 그 파라미터 범위에 해당하는 토큰과
+		  매치되는 경우 해당 파라미터에 값을 대입한다.
+		- 그러나 파라미터 블록, 개수 및 범위가 0으로 전달되는 경우 각 토큰을 파싱하게 되면
+		  param과 val 값을 가지고 항상 unknown handler인 do_early_param() 함수가 호출된다.
+	*/
 	parse_args("early options", cmdline, NULL, 0, 0, 0, NULL,
 		   do_early_param);
 }
 
 /* Arch code calls this early on, or if not, just before other parsing. */
+/*
+ 	parse_early_param() : 커멘드 라인 파라미터들 중 early 파라미터에 해당하는 설정함 수 호출
+*/
 void __init parse_early_param(void)
 {
 	static int done __initdata;
+	//COMMAND_LINE_SIZE = 2048
 	static char tmp_cmdline[COMMAND_LINE_SIZE] __initdata;
 
 	if (done)
 		return;
 
 	/* All fall through to do_early_param. */
+	/*
+		전역변수 boot_command_line의 내용을 tmp_cmdline에 복사
+
+		* boot_command_line
+			A) 부트로더가 다음 중 하나를 전달
+			   - DTB의 "/chosen" 노드의 "bootargs" 속성 값
+			B) 커널에서 준비한 문자열
+			   - 커널 옵션으로 입력한 커맨드라인 문자열 CONFIG_CMDLINE이 준비됨
+			-> A), B)를 아래 옵션에 따라 조합하여 사용
+			   1) CONFIG_CMDLINE_EXTEND
+				  - A), B)를 합쳐서 사용
+			   2) CONFIG_CLDLINE_FORCE
+				  - B) 사용
+			   3) no option(default)
+				  - A) 사용
+	*/
 	strlcpy(tmp_cmdline, boot_command_line, COMMAND_LINE_SIZE);
+	/*
+		early 파라미터에 해당하는 설정 함수를 호출한다.
+	*/
 	parse_early_options(tmp_cmdline);
 	done = 1;
 }

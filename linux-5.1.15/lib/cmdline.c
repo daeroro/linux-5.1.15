@@ -124,13 +124,29 @@ EXPORT_SYMBOL(get_options);
  *	Parses a string into a number.  The number stored at @ptr is
  *	potentially suffixed with K, M, G, T, P, E.
  */
-
+/*
+   	memparse() : 단위를 포함한 숫자를 파싱하여 값을 리턴하고,
+				 retptr에는 파싱 완료한 다음 문자열을 가리킨다.
+*/
 unsigned long long memparse(const char *ptr, char **retptr)
 {
 	char *endptr;	/* local pointer to end of parsed string */
 
+	/*	
+		ptr 문자열을 unsigned long long으로 변환하여 리턴한다.
+		retptr에는 변환에 필요한 문자열의 끝+1이 담긴다.
+
+		ex) ptr="10G"
+
+			-> ret=10ULL
+			   retptr="G"
+	*/
 	unsigned long long ret = simple_strtoull(ptr, &endptr, 0);
 
+	/*
+		단위를 나타내는 문자열을 비교하여 
+		일치하는 경우 해당 case 문부터 break 될 때까지 수행한다.
+	 */
 	switch (*endptr) {
 	case 'E':
 	case 'e':
@@ -196,6 +212,11 @@ bool parse_option_str(const char *str, const char *option)
  * You can use " around spaces, but can't escape ".
  * Hyphens and underscores equivalent in parameter names.
  */
+/*
+	1) "foo=bar"
+	2) foo="bar"
+	3) foo=bar
+*/
 char *next_arg(char *args, char **param, char **val)
 {
 	unsigned int i, equals = 0;
@@ -207,9 +228,14 @@ char *next_arg(char *args, char **param, char **val)
 		in_quote = 1;
 		quoted = 1;
 	}
+	/*
+		1) in_quote = 1, quoted = 1
+		2),3)  		= 0, 		= 0
+	*/
+
 
 	for (i = 0; args[i]; i++) {
-		if (isspace(args[i]) && !in_quote)
+		if (isspace(args[i]) && !in_quote) // in_quote 변수는 현재 args[]가 " " 안에 있는 지를
 			break;
 		if (equals == 0) {
 			if (args[i] == '=')
@@ -233,6 +259,8 @@ char *next_arg(char *args, char **param, char **val)
 				args[i-1] = '\0';
 		}
 	}
+	
+	// 1)의 경우 마지막 "를 '\0'로 치환
 	if (quoted && args[i-1] == '"')
 		args[i-1] = '\0';
 
