@@ -822,6 +822,12 @@ core_initcall(map_entry_trampoline);
 /*
  * Create fine-grained mappings for the kernel.
  */
+/*
+	map_kernel() 
+	: 커널 코드를 의도하지 않은 수정으로부터 보호하고 실행 영역과 비실행 영역 또한 보호하기 위해
+	  커널 코드와 데이터의 읽기 전용 영역과 읽고 쓰기 영역을 나누어 각각의 적절한 매핑 속성으로
+	  매핑한다. 매핑할 페이지 테이블은 요청한 pgd 테이블의 포인터 @pgdp 이며, 이곳에 매핑 수행
+*/
 static void __init map_kernel(pgd_t *pgdp)
 {
 	static struct vm_struct vmlinux_text, vmlinux_rodata, vmlinux_inittext,
@@ -832,14 +838,31 @@ static void __init map_kernel(pgd_t *pgdp)
 	 * mapping to install SW breakpoints. Allow this (only) when
 	 * explicitly requested with rodata=off.
 	 */
+	/*
+		external 디버거를 사용 시 sw 브레이크 포인터를 사용하여 커널 코드가 매핑된 영역에
+		직접 기록할 수 있다. 
+		- 이런 경우 커널 파라메터에 "rodata=off"를 사용하여야 커널 영역을 read only로 하지 않고
+		  기록도 가능하게 매핑할 수 있다.
+	*/
 	pgprot_t text_prot = rodata_enabled ? PAGE_KERNEL_ROX : PAGE_KERNEL_EXEC;
 
 	/*
 	 * Only rodata will be remapped with different permissions later on,
 	 * all other segments are allowed to use contiguous mappings.
 	 */
+	/*
+		커널 이미지의 일반 코드 영역을 커널 실행 페이지 타입으로 매핑함
+	*/
 	map_kernel_segment(pgdp, _text, _etext, text_prot, &vmlinux_text, 0,
 			   VM_NO_GUARD);
+	/*
+		커널 이미지의 읽기 전용 데이터 영역을 임시로 읽기 쓰기가 가능한 커널 페이지 타입으로
+		매핑하되 contiguous 매핑을 하지 않도록 한다.
+		- rodata 섹션에 위치한 데이터들은 잠시 뒤 map_mem() 함수를 통해 PAGE_KERNEL 속성으로 
+		  재 매핑될 예정인데, contiguous 매핑 상태에서는 속성을 바꾸는 매핑을 수행하면
+		  TLB conflict가 발생하는 버그가 발견되었다. 따라서 이 영역에 대해서 contiguous 매핑을
+		  하지 않도록 수정하였다.
+	*/
 	map_kernel_segment(pgdp, __start_rodata, __inittext_begin, PAGE_KERNEL,
 			   &vmlinux_rodata, NO_CONT_MAPPINGS, VM_NO_GUARD);
 	map_kernel_segment(pgdp, __inittext_begin, __inittext_end, text_prot,

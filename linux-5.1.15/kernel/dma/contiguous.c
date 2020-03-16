@@ -165,12 +165,25 @@ int __init dma_contiguous_reserve_area(phys_addr_t size, phys_addr_t base,
 {
 	int ret;
 
+	/*
+		- cma_areas[]에 관리 항목을 추가
+		- 관리할 메모리 크기 정보인 base, size, limit, alignmnet 및 order_per_bit를 사용하여
+		  base_pfn, count, bitmap 할당, alignmnet 및 order_per_bit를 설정한다
+		  -- cma에서 사용하는 비트맵은 각 비트가 1개 페이지를 표현하도록 하게 함
+		  -- 영역의 alignment 단위는 1페이지로 함
+		  -- 해당 영역은 reserve memblock에도 등록됨
+		- 추가한 엔트리들은 CMA 드라이버가 로드될 때 호출되어 초기화한다.
+	*/
 	ret = cma_declare_contiguous(base, size, limit, 0, 0, fixed,
 					"reserved", res_cma);
 	if (ret)
 		return ret;
 
 	/* Architecture specific contiguous memory fixup. */
+	/*
+		cma에서 관리할 메모리 영역을 dma_mmu_remap[]배열에 추가
+		- 나중에 paging_init() -> dma_contigous_remap()에서 호출하여 리매핑 함
+	*/
 	dma_contiguous_early_fixup(cma_get_base(*res_cma),
 				cma_get_size(*res_cma));
 

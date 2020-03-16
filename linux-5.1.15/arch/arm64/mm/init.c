@@ -76,45 +76,74 @@ static void __init reserve_crashkernel(void)
 	unsigned long long crash_base, crash_size;
 	int ret;
 
+	/*
+		"crashkernel="커널 파라메터를 파싱하여
+		crash_size와 crash_base를 알아온다.
+	*/
 	ret = parse_crashkernel(boot_command_line, memblock_phys_mem_size(),
 				&crash_size, &crash_base);
 	/* no crashkernel= or invalid value specified */
+	/*
+		parse_crashkernel()이 정상적으로 값을 읽어오지 않았거나,
+		crash_size가 0이면 return
+	*/
 	if (ret || !crash_size)
 		return;
 
+	/*
+	   	crash_size를 PAGE_SIZE에 맞춰 올림
+	*/
 	crash_size = PAGE_ALIGN(crash_size);
 
+	// 파싱한 crash_base가 0일 때
 	if (crash_base == 0) {
 		/* Current arm64 boot protocol requires 2MB alignment */
+		/*
+			0~ARCH_LOW_ADDRESS_LIMIT 범위에서 SZ_2M로 정렬된 crash_size 사이즈가 있으면
+			crash_base에 시작 주소를 갱신
+		*/
 		crash_base = memblock_find_in_range(0, ARCH_LOW_ADDRESS_LIMIT,
 				crash_size, SZ_2M);
+
 		if (crash_base == 0) {
 			pr_warn("cannot allocate crashkernel (size:0x%llx)\n",
 				crash_size);
 			return;
 		}
+	// 파싱한 crash_base가 0이 아닐 때
 	} else {
 		/* User specifies base address explicitly. */
+		/*
+			crash_base에서 crash_size만큼의 크기가 memory region에 속하는지 확인
+		*/
 		if (!memblock_is_region_memory(crash_base, crash_size)) {
 			pr_warn("cannot reserve crashkernel: region is not memory\n");
 			return;
 		}
 
+		// crash_base에서 crash_size만큼의 크기가 reserve영역과 겹치는 지 확인
 		if (memblock_is_region_reserved(crash_base, crash_size)) {
 			pr_warn("cannot reserve crashkernel: region overlaps reserved memory\n");
 			return;
 		}
 
+		// crash_base가 SZ_2M 단위로 정렬되어 있는지 확인
 		if (!IS_ALIGNED(crash_base, SZ_2M)) {
 			pr_warn("cannot reserve crashkernel: base address is not 2MB aligned\n");
 			return;
 		}
 	}
+	/*
+		crash_base부터 crash_size만큼의 크기를 memblock에 삽입
+	*/
 	memblock_reserve(crash_base, crash_size);
 
 	pr_info("crashkernel reserved: 0x%016llx - 0x%016llx (%lld MB)\n",
 		crash_base, crash_base + crash_size, crash_size >> 20);
 
+	/*
+		struct resource 구조체인 crash_res의 start, end를 갱신
+	*/
 	crashk_res.start = crash_base;
 	crashk_res.end = crash_base + crash_size - 1;
 }

@@ -35,6 +35,14 @@ static unsigned char *vmcoreinfo_data_safecopy;
  *
  * The function returns 0 on success and -EINVAL on failure.
  */
+/*
+	parse_crashkernel_mem() :
+
+	cmdline="start-end:size[,...][@offset]" 형태로 문자열이 전달된 경우
+	','로 구분한 마지막 range에서 size를 파싱하여 출력 인수 crash_size에 담고,
+	@offset를 파싱하여 crash_base에 담은 후 성공리에 0을 리턴한다.
+	- 만일 range가 system_ram을 초과하는 경우에는 에러를 리턴한다.
+*/
 static int __init parse_crashkernel_mem(char *cmdline,
 					unsigned long long system_ram,
 					unsigned long long *crash_size,
@@ -47,11 +55,17 @@ static int __init parse_crashkernel_mem(char *cmdline,
 		unsigned long long start, end = ULLONG_MAX, size;
 
 		/* get the start of the range */
+		/*
+			cur 문자열을 파싱하여 start에 시작 주소를 알아오고 tmp는 다음 문자열을 가리킴
+		*/
 		start = memparse(cur, &tmp);
 		if (cur == tmp) {
 			pr_warn("crashkernel: Memory value expected\n");
 			return -EINVAL;
 		}
+		/*
+		   	다음 문자열이 '-'이 아니면 경고 메시지를 출력하고 에러를 리턴한다.
+		*/
 		cur = tmp;
 		if (*cur != '-') {
 			pr_warn("crashkernel: '-' expected\n");
@@ -60,6 +74,10 @@ static int __init parse_crashkernel_mem(char *cmdline,
 		cur++;
 
 		/* if no ':' is here, than we read the end */
+		/*
+			':' 문자열이 아니면 cur 문자열을 파싱하여 end에 끝 주소를 알아오고
+			tmp는 다음 문자열을 가리킨다.
+		*/
 		if (*cur != ':') {
 			end = memparse(cur, &tmp);
 			if (cur == tmp) {
@@ -72,31 +90,52 @@ static int __init parse_crashkernel_mem(char *cmdline,
 				return -EINVAL;
 			}
 		}
-
+		
+		/*	
+			다음 문자열이 ':'가 아니면 경고 메세지를 출력하고 에러를 리턴한다.
+		*/
 		if (*cur != ':') {
 			pr_warn("crashkernel: ':' expected\n");
 			return -EINVAL;
 		}
 		cur++;
 
+		/*
+			cur를 파싱하여 size를 읽는다.
+		*/
 		size = memparse(cur, &tmp);
 		if (cur == tmp) {
 			pr_warn("Memory value expected\n");
 			return -EINVAL;
 		}
 		cur = tmp;
+		/*
+		   	읽어온 size가 system_ram보다 같거나 크면 에러
+		*/
 		if (size >= system_ram) {
 			pr_warn("crashkernel: invalid size\n");
 			return -EINVAL;
 		}
 
 		/* match ? */
+		/*
+		   	파싱한 start, end의 범위가 system_ram 범위를 포함하면 
+			crash_size를 갱신하고 반복문 종료
+		*/
 		if (system_ram >= start && system_ram < end) {
 			*crash_size = size;
 			break;
 		}
+	/*
+	   	"start1-end1:size1,start2-end2:size2,..."로 문자열이 들어오는 것 같음..
+		그 중에서 마지막 start-end:size를 선택
+	*/
 	} while (*cur++ == ',');
 
+	/*
+	   	crash_size가 0이상이면 cur문자열이 ' '또는 '@'가 나올 때 까지 cur 증가
+		@offset 형식을 찾아서 crash_base를 갱신 
+	*/
 	if (*crash_size > 0) {
 		while (*cur && *cur != ' ' && *cur != '@')
 			cur++;

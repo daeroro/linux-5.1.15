@@ -263,11 +263,19 @@ int __init cma_declare_contiguous(phys_addr_t base,
 	pr_debug("%s(size %pa, base %pa, limit %pa alignment %pa)\n",
 		__func__, &size, &base, &limit, &alignment);
 
+	/*
+		cma_area_count가 cma_area[]에서 가리키는 배열이 몇 개 할당되어 있는지를 나타냄
+	*/
 	if (cma_area_count == ARRAY_SIZE(cma_areas)) {
 		pr_err("Not enough slots for CMA reserved regions!\n");
 		return -ENOSPC;
 	}
 
+	/*
+		size, alignment 체크
+		- size가 0이면 -> error
+		- alignment가 0이 아니고, 2의 제곱수가 아니면 -> error
+	*/
 	if (!size)
 		return -EINVAL;
 
@@ -280,16 +288,30 @@ int __init cma_declare_contiguous(phys_addr_t base,
 	 * migratetype page by page allocator's buddy algorithm. In the case,
 	 * you couldn't get a contiguous memory, which is not what we want.
 	 */
+	/*
+	    PAGE_SIZE = 4k
+		MAX_ORDER = 11
+		pageblock_order = MAX_ORDER - 1 = 10
+
+		- alignmet를 구하고
+		- base, size를 alignment에 맞춰 정렬(round up)
+		- limit을 alignmnet 사이즈에 맞춰 round down
+
+	*/
 	alignment = max(alignment,  (phys_addr_t)PAGE_SIZE <<
 			  max_t(unsigned long, MAX_ORDER - 1, pageblock_order));
 	base = ALIGN(base, alignment);
 	size = ALIGN(size, alignment);
 	limit &= ~(alignment - 1);
 
+	// base가 0이면 고정 할당 x
 	if (!base)
 		fixed = false;
 
 	/* size should be aligned with order_per_bit */
+	/*
+		size는 order_per_bit 단위로 정렬되어 있어야 함 --------------??????	
+	*/
 	if (!IS_ALIGNED(size >> PAGE_SHIFT, 1 << order_per_bit))
 		return -EINVAL;
 
@@ -297,6 +319,10 @@ int __init cma_declare_contiguous(phys_addr_t base,
 	 * If allocating at a fixed base the request region must not cross the
 	 * low/high memory boundary.
 	 */
+	/*
+		고정 할당의 경우,
+		할당하려는 구간이 low/high 구간을 가로지르면 안됨
+	*/
 	if (fixed && base < highmem_start && base + size > highmem_start) {
 		ret = -EINVAL;
 		pr_err("Region at %pa defined on low/high memory boundary (%pa)\n",
@@ -309,16 +335,28 @@ int __init cma_declare_contiguous(phys_addr_t base,
 	 * value will be the memblock end. Set it explicitly to simplify further
 	 * checks.
 	 */
+	/*
+		limit이 설정되어 있지 않거나, memblock_end 보다 큰 경우
+		limit을 memblock_end로 설정
+	*/
 	if (limit == 0 || limit > memblock_end)
 		limit = memblock_end;
 
 	/* Reserve memory */
-	if (fixed) {
+	/*
+		메모리 할당
+		- 고정 할당의 경우
+		- 고정 할당이 아닌 경우
+	*/
+	if (fixed) { // 고정 할당의 경우
 		if (memblock_is_region_reserved(base, size) ||
 		    memblock_reserve(base, size) < 0) {
 			ret = -EBUSY;
 			goto err;
 		}
+	/*
+		고정 할당이 아닌 경우
+	*/
 	} else {
 		phys_addr_t addr = 0;
 
@@ -328,6 +366,10 @@ int __init cma_declare_contiguous(phys_addr_t base,
 		 * try allocating from high memory first and fall back to low
 		 * memory in case of failure.
 		 */
+		/*
+			reserved area는 같은 zone에 있어야 하므로
+			high memory에서 먼저 할당을 시도하고, 실패할 경우 low memory에서 할당 시도
+		*/
 		if (base < highmem_start && limit > highmem_start) {
 			addr = memblock_phys_alloc_range(size, alignment,
 							 highmem_start, limit);
@@ -351,6 +393,10 @@ int __init cma_declare_contiguous(phys_addr_t base,
 		base = addr;
 	}
 
+	/*
+		- 전역 변수인 cma_areas[]에 저장
+		- 인자로 들어온 res_cma을 갱신
+	*/
 	ret = cma_init_reserved_mem(base, size, order_per_bit, name, res_cma);
 	if (ret)
 		goto free_mem;
