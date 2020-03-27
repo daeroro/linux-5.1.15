@@ -98,11 +98,24 @@ pgprot_t phys_mem_access_prot(struct file *file, unsigned long pfn,
 }
 EXPORT_SYMBOL(phys_mem_access_prot);
 
+/*
+	early_pgtable_alloc()
+
+	- 페이지 테이블 용도로 사용할 싱글 페이지를 할당하여 0으로 초기화한 후
+	페이지 물리 주소를 반환한다.
+
+	- 0으로 초기화할 때 커널이 사용할 메모리들은 아직 매핑되어 있지 않으므로 접근할 수 없음
+	-> 임시로 가상 주소를 사용하여 0으로 초기화하기 위해 
+	   fixmap 영역의 FIX_PTE 주소에 임시로 매핑하는 방법을 사용한다.
+*/
 static phys_addr_t __init early_pgtable_alloc(void)
 {
 	phys_addr_t phys;
 	void *ptr;
 
+	/*
+		커널 페이지 테이블로 사용할 하나의 페이지를 memblock으로부터 할당받는다.
+	*/
 	phys = memblock_phys_alloc(PAGE_SIZE, PAGE_SIZE);
 	if (!phys)
 		panic("Failed to allocate page table page\n");
@@ -112,6 +125,10 @@ static phys_addr_t __init early_pgtable_alloc(void)
 	 * slot will be free, so we can (ab)use the FIX_PTE slot to initialise
 	 * any level of table.
 	 */
+	/*
+		fixmap의 FIX_PTE 주소에 매핑한 후 해당 페이지를 0으로 클리어하고,
+		다시 매핑 해제한 후 물리 주소를 리턴한다.
+	*/
 	ptr = pte_set_fixmap(phys);
 
 	memset(ptr, 0, PAGE_SIZE);
@@ -666,13 +683,24 @@ void __init mark_linear_text_alias_ro(void)
 			    PAGE_KERNEL_RO);
 }
 
+/*
+	map_mem() : memory memblock에 등록된 각 메모리 영역을 pgd에 매핑한다.
+*/
 static void __init map_mem(pgd_t *pgdp)
 {
 	phys_addr_t kernel_start = __pa_symbol(_text);
 	phys_addr_t kernel_end = __pa_symbol(__init_begin);
 	struct memblock_region *reg;
 	int flags = 0;
+	
+	/*
+	   "rodata=full" 커멘드라인 파라메타가 주어지거나
+	   CONFIG_DEBUG_PAGEALLOC 커널 옵션과 "debug_pagealloc="이 설정된 경우
+	   -> 커널은 writable 페이지가 된다.
 
+	   - 이러한 경우 블럭(huge : pmd 타입 2M 섹션, pud 타입 1G 섹션) 매핑과
+	   리니어 매핑을 하지 못하도록 플래그를 설정한다.
+	*/
 	if (rodata_full || debug_pagealloc_enabled())
 		flags = NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
@@ -682,7 +710,14 @@ static void __init map_mem(pgd_t *pgdp)
 	 * So temporarily mark them as NOMAP to skip mappings in
 	 * the following for-loop
 	 */
+	/*
+		임시로 커널 memblock 영역을 nomap 플래그를 설정하여 아래 루프에서 매팽하지 못하도록 함
+	*/
 	memblock_mark_nomap(kernel_start, kernel_end - kernel_start);
+
+	/*
+	   	crash kernel 영역도 nomap 플래그를 설정한다
+	*/
 #ifdef CONFIG_KEXEC_CORE
 	if (crashk_res.end)
 		memblock_mark_nomap(crashk_res.start,
@@ -690,15 +725,25 @@ static void __init map_mem(pgd_t *pgdp)
 #endif
 
 	/* map all the memory banks */
+	/*
+		memory memblock에 등록된 각 영역에 대해 루프를 돌며
+		영역의 시작 주소와 끝 주소를 구한다.
+	*/
 	for_each_memblock(memory, reg) {
 		phys_addr_t start = reg->base;
 		phys_addr_t end = start + reg->size;
 
 		if (start >= end)
 			break;
+		/*
+		   	노매핑 플래그가 설정된 영역은 매핑하지 않는다.
+		*/
 		if (memblock_is_nomap(reg))
 			continue;
 
+		/*
+			memblock의 start~end 영역을 커널 페이지 속성으로 페이지 테이블에 매핑한다.
+		*/
 		__map_memblock(pgdp, start, end, PAGE_KERNEL, flags);
 	}
 
@@ -712,8 +757,23 @@ static void __init map_mem(pgd_t *pgdp)
 	 * Note that contiguous mappings cannot be remapped in this way,
 	 * so we should avoid them here.
 	 */
+	/*
+		커널 영역을 커널 페이지 속성으로 리니어 영역에 매핑하되
+		contiguous 매핑을 허용하지 않는다.
+
+		- 리니어 매핑 영역에 커널 이미지를 매핑하여 놔두는 이유?
+
+		: hibernate 같은 다른 서브 시스템은 여전히 리니어 매핑 주소를 통해
+		  커널 텍스트나 데이터 세그먼트를 참조할 필요가 있기 때문에
+		  리니어 매핑 영역에도 매핑한다.
+		: 리니어 매핑 영역의 커널 이미지는 부주의한 수정이나 실행을 방지하지 위해
+		  읽기 전용/비실행 가능으로 매핑한다.
+	*/
 	__map_memblock(pgdp, kernel_start, kernel_end,
 		       PAGE_KERNEL, NO_CONT_MAPPINGS);
+	/*
+		임시로 커널 memblock 영역에 nomap 플래그를 설정한 것을 제거한다.	
+	*/
 	memblock_clear_nomap(kernel_start, kernel_end - kernel_start);
 
 #ifdef CONFIG_KEXEC_CORE
@@ -722,6 +782,10 @@ static void __init map_mem(pgd_t *pgdp)
 	 * in page granularity and put back unused memory to buddy system
 	 * through /sys/kernel/kexec_crash_size interface.
 	 */
+	/*
+		crash kernel 영역을 커널 페이지로 매핑하되 블럭 매핑과 리니어 매핑을 하지 않음
+		- 그런 후 memblock에 임시로 설정한 nomap 플래그를 제거한다.
+	*/
 	if (crashk_res.end) {
 		__map_memblock(pgdp, crashk_res.start, crashk_res.end + 1,
 			       PAGE_KERNEL,
@@ -747,6 +811,12 @@ void mark_rodata_ro(void)
 	debug_checkwx();
 }
 
+/*
+	map_kernel_segment()
+
+	- 요청 가상 주소 범위를 가상 주소에 해당하는 물리 주소에 prot 타입으로 매핑하고
+	  이 영역은 vm_struct 구조체에 담아 전역 vmlist에 담아둔다.
+*/
 static void __init map_kernel_segment(pgd_t *pgdp, void *va_start, void *va_end,
 				      pgprot_t prot, struct vm_struct *vma,
 				      int flags, unsigned long vm_flags)
@@ -757,12 +827,19 @@ static void __init map_kernel_segment(pgd_t *pgdp, void *va_start, void *va_end,
 	BUG_ON(!PAGE_ALIGNED(pa_start));
 	BUG_ON(!PAGE_ALIGNED(size));
 
+	/*
+		요청 가상 주소 범위 @va_start ~ @va_end에 해당하는 물리 주소에 prot 메모리 타입 매핑
+	*/
 	__create_pgd_mapping(pgdp, pa_start, (unsigned long)va_start, size, prot,
 			     early_pgtable_alloc, flags);
 
 	if (!(vm_flags & VM_NO_GUARD))
 		size += PAGE_SIZE;
 
+	/*
+		구성된 vm_struct 구조체를 전역 vmlist에 담아둔다.
+		-> 나중에 슬랩 메모리 할당자가 활성화된 이후에 vmalloc_init() 함수가 호출되면서 활용
+	*/
 	vma->addr	= va_start;
 	vma->phys_addr	= pa_start;
 	vma->size	= size;
@@ -851,13 +928,13 @@ static void __init map_kernel(pgd_t *pgdp)
 	 * all other segments are allowed to use contiguous mappings.
 	 */
 	/*
-		커널 이미지의 일반 코드 영역을 커널 실행 페이지 타입으로 매핑함
+		커널 이미지의 일반 코드 영역 - 커널 실행 페이지 타입 매핑
 	*/
 	map_kernel_segment(pgdp, _text, _etext, text_prot, &vmlinux_text, 0,
 			   VM_NO_GUARD);
 	/*
-		커널 이미지의 읽기 전용 데이터 영역을 임시로 읽기 쓰기가 가능한 커널 페이지 타입으로
-		매핑하되 contiguous 매핑을 하지 않도록 한다.
+		읽기 전용 데이터 영역 - 커널 페이지 타입 매핑(임시로 읽고 쓰기 가능)
+		                      - contiguous 매핑 하지 않도록 한다.
 		- rodata 섹션에 위치한 데이터들은 잠시 뒤 map_mem() 함수를 통해 PAGE_KERNEL 속성으로 
 		  재 매핑될 예정인데, contiguous 매핑 상태에서는 속성을 바꾸는 매핑을 수행하면
 		  TLB conflict가 발생하는 버그가 발견되었다. 따라서 이 영역에 대해서 contiguous 매핑을
@@ -865,12 +942,25 @@ static void __init map_kernel(pgd_t *pgdp)
 	*/
 	map_kernel_segment(pgdp, __start_rodata, __inittext_begin, PAGE_KERNEL,
 			   &vmlinux_rodata, NO_CONT_MAPPINGS, VM_NO_GUARD);
+	/*
+		초기화 코드 영역 - 커널 실행 페이지 타입 매핑
+	*/
 	map_kernel_segment(pgdp, __inittext_begin, __inittext_end, text_prot,
 			   &vmlinux_inittext, 0, VM_NO_GUARD);
+	/*
+		초기화 데이터 영역 -  커널 페이지 타입 매핑
+	*/
 	map_kernel_segment(pgdp, __initdata_begin, __initdata_end, PAGE_KERNEL,
 			   &vmlinux_initdata, 0, VM_NO_GUARD);
+	/*
+		일반 데이터 영역 -  커널 페이지 타입 매핑
+	*/
 	map_kernel_segment(pgdp, _data, _end, PAGE_KERNEL, &vmlinux_data, 0, 0);
 
+	/*
+		요청한 pgd 테이블에 fixmap 주소 영역이 아직 매핑되어 있지 않았다면
+		커널 페이지 테이블의 fixmap에 해당하는 엔트리를 읽어 매핑한다.
+	*/
 	if (!READ_ONCE(pgd_val(*pgd_offset_raw(pgdp, FIXADDR_START)))) {
 		/*
 		 * The fixmap falls in a separate pgd to the kernel, and doesn't
@@ -879,6 +969,12 @@ static void __init map_kernel(pgd_t *pgdp)
 		 */
 		set_pgd(pgd_offset_raw(pgdp, FIXADDR_START),
 			READ_ONCE(*pgd_offset_k(FIXADDR_START)));
+	/*
+		pgd 테이블에 fixmap 주소 영역 엔트리가 설정된 경우이면서 변환 레벨이 3을 초과한다면
+		fixmap은 커널용 pgd 테이블에 위치하지 않고 bm_pud[]에 위치해 있다.
+		- 따라서 fixmap에 pud 테이블을 매핑한 후 pud 엔트리에 bm_pmd[]테이블을 연결한다.
+		- 그런 후 pud 테이블의 매핑을 해제한다.
+	*/
 	} else if (CONFIG_PGTABLE_LEVELS > 3) {
 		/*
 		 * The fixmap shares its top level pgd entry with the kernel
@@ -900,19 +996,38 @@ static void __init map_kernel(pgd_t *pgdp)
 
 void __init paging_init(void)
 {
+	/*
+	   	커널 페이지 테이블로 사용할 pgd 테이블로 컴파일 타임에 static하게 생성한
+		&swapper_pg_dir 테이블을 사용하여 fixmap 영역에서 pgd 엔트리에 해당하는 주소에 매핑함
+	*/
 	pgd_t *pgdp = pgd_set_fixmap(__pa_symbol(swapper_pg_dir));
 
+	/*
+	   	커널(코드 및 데이터) 영역과 메모리 영역을 매핑한다.
+	*/
 	map_kernel(pgdp);
 	map_mem(pgdp);
 
+	/*
+		fixmap 영역의 pgd 엔트리에 매핑한 pgd 테이블을 매핑 해제한다.
+	*/
 	pgd_clear_fixmap();
 
+	/*
+		커널용 ttbr1이 swapper_pg_dir을 가리키도록 한다.
+	*/
 	cpu_replace_ttbr1(lm_alias(swapper_pg_dir));
 	init_mm.pgd = swapper_pg_dir;
 
+	/*
+	   	임시로 사용한 init_pg_dir 페이지 테이블 영역을 memblock에서 할당 해제한다.
+	*/
 	memblock_free(__pa_symbol(init_pg_dir),
 		      __pa_symbol(init_pg_end) - __pa_symbol(init_pg_dir));
 
+	/*
+	   	memblock이 확장될 수 있게 설정한다.
+	*/
 	memblock_allow_resize();
 }
 

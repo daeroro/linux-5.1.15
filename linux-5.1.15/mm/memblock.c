@@ -296,7 +296,11 @@ __memblock_find_range_top_down(phys_addr_t start, phys_addr_t end,
  * Return:
  * Found address on success, 0 on failure.
  */
-//
+/*
+	memblock_find_in_range_node()
+
+
+*/
 static phys_addr_t __init_memblock memblock_find_in_range_node(phys_addr_t size,
 					phys_addr_t align, phys_addr_t start,
 					phys_addr_t end, int nid,
@@ -996,10 +1000,16 @@ static int __init_memblock memblock_setclr_flag(phys_addr_t base,
 	struct memblock_type *type = &memblock.memory;
 	int i, ret, start_rgn, end_rgn;
 
+	// base, size 만큼 memblock 영역을 분리함
 	ret = memblock_isolate_range(type, base, size, &start_rgn, &end_rgn);
 	if (ret)
 		return ret;
 
+	/*
+		분리된 영역(start_rgn ~ end_rgn -1)까지 반복하면서 flag를 갱신
+		- set == 1 -> flag를 set
+		- set == 0 -> flag를 clear
+	*/
 	for (i = start_rgn; i < end_rgn; i++) {
 		struct memblock_region *r = &type->regions[i];
 
@@ -1009,6 +1019,7 @@ static int __init_memblock memblock_setclr_flag(phys_addr_t base,
 			r->flags &= ~flag;
 	}
 
+	// 인접한 영역은 merge한다
 	memblock_merge_regions(type);
 	return 0;
 }
@@ -1421,31 +1432,55 @@ int __init_memblock memblock_set_node(phys_addr_t base, phys_addr_t size,
  * Return:
  * Physical address of allocated memory block on success, %0 on failure.
  */
+/*
+	memblock_alloc_range_nid()
+
+	- 요청한 노드 @nid에서 @align 단위로 정렬된 @size만큼의 memblock영역을 
+	@start~@end 범위에서 할당 요청한다.
+	- 성공한 경우 할당된 주소가 반환된다.
+*/
 static phys_addr_t __init memblock_alloc_range_nid(phys_addr_t size,
 					phys_addr_t align, phys_addr_t start,
 					phys_addr_t end, int nid)
 {
+	// memblock이 mirror 된 영역인지 아닌지 설정하는 flags
 	enum memblock_flags flags = choose_memblock_flags();
 	phys_addr_t found;
 
 	if (WARN_ONCE(nid == MAX_NUMNODES, "Usage of MAX_NUMNODES is deprecated. Use NUMA_NO_NODE instead\n"))
 		nid = NUMA_NO_NODE;
 
+	/*
+	   	align이 지정되지 않은 경우 캐시 라인 바이트 수로 지정한다.
+	*/
 	if (!align) {
 		/* Can't use WARNs this early in boot on powerpc */
 		dump_stack();
 		align = SMP_CACHE_BYTES;
 	}
 
+	/*
+		end 범위가 memblock의 current_limit을 넘어가는 경우
+		end를 current_limit으로 지정
+	*/
 	if (end > memblock.current_limit)
 		end = memblock.current_limit;
 
 again:
 	found = memblock_find_in_range_node(size, align, start, end, nid,
 					    flags);
+	/*
+		위 함수에서 memblock에서 할당할 공간을 찾고, 
+		할당에 성공한 경우는 done으로
+	*/
 	if (found && !memblock_reserve(found, size))
 		goto done;
 
+	/*
+		할당할 공간을 찾지 못했거나 할당에 실패한 경우,
+		nid가 NUMA_NO_NODE가 아니면 nid를 NUMA_NO_NODE로 변경해
+		다시 할당할 공간을 찾고, 할당을 시도한다.
+	*/
 	if (nid != NUMA_NO_NODE) {
 		found = memblock_find_in_range_node(size, align, start,
 						    end, NUMA_NO_NODE,
@@ -1454,6 +1489,11 @@ again:
 			goto done;
 	}
 
+	/*
+		mirror된 memblock memory 공간에서 찾고 있었던 경우에는
+		원래 memblock에서 다시 찾기 위해 MEMBLOCK_MIRROR 비트를 clear하고 
+		다시 찾는다.
+	*/
 	if (flags & MEMBLOCK_MIRROR) {
 		flags &= ~MEMBLOCK_MIRROR;
 		pr_warn("Could not allocate %pap bytes of mirrored memory\n",
@@ -1461,6 +1501,7 @@ again:
 		goto again;
 	}
 
+	// 할당할 공간을 찾지 못했거나, 할당에 성공하지 못한 경우 -> 0을 반환
 	return 0;
 
 done:
@@ -1474,6 +1515,7 @@ done:
 		 */
 		kmemleak_alloc_phys(found, size, 0, 0);
 
+	// 할당할 공간을 찾아서, 할당에 성공한 경우 ->  할당된 가상 주소를 반환
 	return found;
 }
 

@@ -1208,6 +1208,9 @@ void __init vm_area_add_early(struct vm_struct *vm)
 
 	BUG_ON(vmap_initialized);
 	for (p = &vmlist; (tmp = *p) != NULL; p = &tmp->next) {
+		/*
+			vmlist는 addr이 높->낮은 순서로 저장되어 있음
+		*/
 		if (tmp->addr >= vm->addr) {
 			BUG_ON(tmp->addr < vm->addr + vm->size);
 			break;

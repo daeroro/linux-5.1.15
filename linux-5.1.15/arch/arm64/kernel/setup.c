@@ -322,7 +322,7 @@ void __init setup_arch(char **cmdline_p)
 	
 	//	fixmap을 사용할 수 있도록 페이지 테이블에 매핑해둔다.
 	early_fixmap_init();
-	// early I/O 메모미 매핑 초기화하기
+	// early I/O 메모리 매핑 초기화하기
 	early_ioremap_init();
 
 	// fdt를 읽어 머신 초기화하기
