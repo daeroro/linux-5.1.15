@@ -1,8 +1,0 @@
-  # TO tag         FROM line  in file/text
-  1  6 start_kernel        1  init/main.c
-  2  4 setup_arch        600  init/main.c
-  3  1 arm64_memblock_init   354  arch/arm64/kernel/setup.c
-  4  3 reserve_crashkernel   546  arch/arm64/mm/init.c
-  5  1 parse_crashkernel    79  arch/arm64/mm/init.c
-
-->parse_crashkernel_mem() 부터!!
